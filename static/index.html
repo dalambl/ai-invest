@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+<div class="app">
+    <nav class="navbar">
+        <div class="logo">PORTFOLIO</div>
+        <div class="account-info">
+            <div>NLV <span class="value" id="nav-nlv">—</span></div>
+            <div>Cash <span class="value" id="nav-cash">—</span></div>
+            <div>P&L <span class="value" id="nav-pnl">—</span></div>
+            <button class="theme-toggle" id="theme-toggle" title="Toggle theme">◑</button>
+        </div>
+    </nav>
+
+    <aside class="sidebar">
+        <button class="nav-btn active" data-page="holdings" title="Holdings">📊<span>HLD</span></button>
+        <button class="nav-btn" data-page="performance" title="Performance">📈<span>PRF</span></button>
+        <button class="nav-btn" data-page="risk" title="Risk">⚡<span>RSK</span></button>
+        <button class="nav-btn" data-page="exposure" title="Exposure">🎯<span>EXP</span></button>
+        <button class="nav-btn" data-page="trades" title="Trades">📋<span>TRD</span></button>
+        <button class="nav-btn" data-page="watchlist" title="Watchlist">👁<span>WCH</span></button>
+        <button class="nav-btn" data-page="market" title="Market">🌐<span>MKT</span></button>
+    </aside>
+
+    <main class="main" id="main-content">
+        <!-- Holdings -->
+        <div class="page active" id="page-holdings">
+            <div class="horizon-bar" id="holdings-horizon">
+                <button class="horizon-pill active" data-h="1d">1D</button>
+                <button class="horizon-pill" data-h="5d">5D</button>
+                <button class="horizon-pill" data-h="mtd">MTD</button>
+                <button class="horizon-pill" data-h="1m">1M</button>
+                <button class="horizon-pill" data-h="qtd">QTD</button>
+                <button class="horizon-pill" data-h="3m">3M</button>
+                <button class="horizon-pill" data-h="6m">6M</button>
+                <button class="horizon-pill" data-h="ytd">YTD</button>
+                <button class="horizon-pill" data-h="1y">1Y</button>
+                <button class="horizon-pill" data-h="3y">3Y</button>
+                <button class="horizon-pill" data-h="5y">5Y</button>
+                <button class="horizon-pill" data-h="all">ALL</button>
+            </div>
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <div class="card-title">Positions</div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-secondary" onclick="exportCSV('positions')">Export CSV</button>
+                        <button class="btn btn-secondary" onclick="document.getElementById('import-pos').click()">Import CSV</button>
+                        <input type="file" id="import-pos" accept=".csv" style="display:none" onchange="importCSV('positions', this)">
+                        <button class="btn" onclick="refreshPositions()">Refresh</button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table id="holdings-table">
+                        <thead><tr>
+                            <th data-sort="symbol">Symbol</th>
+                            <th data-sort="sec_type">Type</th>
+                            <th data-sort="purchase_date">Purchased</th>
+                            <th data-sort="quantity" class="num">Qty</th>
+                            <th data-sort="avg_cost" class="num">Avg Cost</th>
+                            <th data-sort="market_price" class="num">Price</th>
+                            <th data-sort="market_value" class="num">Mkt Value</th>
+                            <th data-sort="weight" class="num">Weight %</th>
+                            <th data-sort="unrealized_pnl" class="num">Unrl P&L</th>
+                            <th data-sort="pnl_pct" class="num">P&L %</th>
+                            <th data-sort="dividends_cumulative" class="num">Divs</th>
+                            <th data-sort="total_return" class="num">Total Ret</th>
+                            <th data-sort="horizon_pnl" class="num">Period P&L</th>
+                            <th data-sort="horizon_pnl_pct" class="num">Period %</th>
+                            <th data-sort="currency">Ccy</th>
+                        </tr></thead>
+                        <tbody id="holdings-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance -->
+        <div class="page" id="page-performance">
+            <div class="horizon-bar" id="perf-horizon">
+                <button class="horizon-pill" data-h="1m">1M</button>
+                <button class="horizon-pill" data-h="3m">3M</button>
+                <button class="horizon-pill" data-h="6m">6M</button>
+                <button class="horizon-pill active" data-h="ytd">YTD</button>
+                <button class="horizon-pill" data-h="1y">1Y</button>
+                <button class="horizon-pill" data-h="3y">3Y</button>
+                <button class="horizon-pill" data-h="5y">5Y</button>
+                <button class="horizon-pill" data-h="all">ALL</button>
+            </div>
+            <div class="card">
+                <div class="card-title">Cumulative P&L ($)</div>
+                <div class="chart-container" id="pnl-chart"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Drawdown (%)</div>
+                <div class="chart-container" id="perf-drawdown-chart"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Cumulative Returns (%)</div>
+                <div class="chart-container" id="perf-chart"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Portfolio Value</div>
+                <div class="chart-container" id="value-chart"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Monthly Returns (%)</div>
+                <div id="monthly-grid"></div>
+            </div>
+        </div>
+
+        <!-- Risk -->
+        <div class="page" id="page-risk">
+            <div class="card">
+                <div class="card-title">Risk Metrics</div>
+                <div class="risk-grid" id="risk-metrics"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Drawdown</div>
+                <div class="chart-container" id="drawdown-chart"></div>
+            </div>
+        </div>
+
+        <!-- Exposure -->
+        <div class="page" id="page-exposure">
+            <div class="exposure-grid">
+                <div class="card">
+                    <div class="card-title">Asset Class Breakdown</div>
+                    <div class="chart-container" id="exposure-pie"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Holdings by Weight</div>
+                    <div class="chart-container" id="exposure-bar"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">Portfolio Heatmap</div>
+                <div class="heatmap-container" id="heatmap"></div>
+            </div>
+        </div>
+
+        <!-- Trades -->
+        <div class="page" id="page-trades">
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                    <div class="card-title">Trade Log</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <input type="date" id="trades-from" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius)">
+                        <span style="color:var(--text2)">to</span>
+                        <input type="date" id="trades-to" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius)">
+                        <button class="btn btn-secondary" onclick="loadTrades()">Filter</button>
+                        <button class="btn btn-secondary" onclick="exportCSV('trades')">Export CSV</button>
+                        <button class="btn btn-secondary" onclick="document.getElementById('import-trades').click()">Import CSV</button>
+                        <input type="file" id="import-trades" accept=".csv" style="display:none" onchange="importCSV('trades', this)">
+                    </div>
+                </div>
+                <div class="table-wrap" style="max-height:calc(100vh - 180px);overflow-y:auto">
+                    <table id="trades-table">
+                        <thead><tr>
+                            <th data-sort="trade_date">Date</th>
+                            <th data-sort="symbol">Symbol</th>
+                            <th data-sort="action">Action</th>
+                            <th data-sort="quantity" class="num">Qty</th>
+                            <th data-sort="price" class="num">Price</th>
+                            <th data-sort="commission" class="num">Comm</th>
+                            <th data-sort="net_amount" class="num">Net</th>
+                            <th data-sort="exchange">Exch</th>
+                            <th data-sort="asset_class">Type</th>
+                            <th data-sort="account">Account</th>
+                        </tr></thead>
+                        <tbody id="trades-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Watchlist -->
+        <div class="page" id="page-watchlist">
+            <div class="card">
+                <div class="card-title">Watchlist</div>
+                <div class="watchlist-input">
+                    <input type="text" id="watchlist-add" placeholder="Add symbol (e.g. AAPL)" onkeydown="if(event.key==='Enter')addToWatchlist()">
+                    <button class="btn" onclick="addToWatchlist()">Add</button>
+                </div>
+                <div class="table-wrap">
+                    <table id="watchlist-table">
+                        <thead><tr>
+                            <th>Symbol</th>
+                            <th class="num">Last</th>
+                            <th class="num">Bid</th>
+                            <th class="num">Ask</th>
+                            <th class="num">Volume</th>
+                            <th class="num">High</th>
+                            <th class="num">Low</th>
+                            <th></th>
+                        </tr></thead>
+                        <tbody id="watchlist-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Market -->
+        <div class="page" id="page-market">
+            <div class="card">
+                <div class="card-title">Top Movers (Portfolio)</div>
+                <div class="table-wrap">
+                    <table id="movers-table">
+                        <thead><tr>
+                            <th>Symbol</th>
+                            <th class="num">Qty</th>
+                            <th class="num">Price</th>
+                            <th class="num">Mkt Value</th>
+                            <th class="num">Unrealized P&L</th>
+                        </tr></thead>
+                        <tbody id="movers-body"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+                    <div class="card-title" style="margin-bottom:0">Symbol Chart</div>
+                    <input type="text" id="chart-symbol" placeholder="SPY" value="SPY"
+                        style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius);font-family:var(--mono);width:80px"
+                        onkeydown="if(event.key==='Enter')loadSymbolChart()">
+                    <div class="horizon-bar" id="chart-horizon" style="margin-bottom:0">
+                        <button class="horizon-pill" data-h="1m">1M</button>
+                        <button class="horizon-pill" data-h="3m">3M</button>
+                        <button class="horizon-pill" data-h="6m">6M</button>
+                        <button class="horizon-pill active" data-h="1y">1Y</button>
+                    </div>
+                </div>
+                <div class="chart-container" id="symbol-chart"></div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="statusbar">
+        <span><span class="status-dot disconnected" id="status-dot"></span> <span id="status-text">Disconnected</span></span>
+        <span>Last update: <span id="last-update">—</span></span>
+        <span style="margin-left:auto">Press <kbd style="background:var(--bg3);padding:1px 5px;border-radius:3px;border:1px solid var(--border)">/</kbd> for command bar</span>
+    </footer>
+</div>
+
+<!-- Command Bar -->
+<div class="command-overlay" id="command-overlay">
+    <div class="command-box">
+        <input type="text" id="command-input" placeholder="Type a command or symbol...">
+        <div class="command-results" id="command-results"></div>
+    </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
