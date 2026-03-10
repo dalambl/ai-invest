@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "trading"
+version = "0.1.0"
+description = ""
+authors = ["David Lambl <david1lambl@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+aiosqlite = "^0.22.1"
+fastapi = "^0.135.1"
+ib_insync = "^0.9.86"
+pandas = "^2.1.4"
+uvicorn = "^0.41.0"
+yfinance = "^1.2.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
