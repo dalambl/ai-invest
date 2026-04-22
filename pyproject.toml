@@ -1,20 +1,59 @@
-[tool.poetry]
-name = "trading"
+[project]
+name = "ai-invest"
 version = "0.1.0"
-description = ""
-authors = ["David Lambl <david1lambl@gmail.com>"]
+description = "Personal portfolio tracking, analytics, and research."
 readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "fastapi>=0.135.1",
+    "ib-insync>=0.9.86",
+    "pandas>=2.1.4",
+    "python-multipart>=0.0.26",
+    "uvicorn>=0.41.0",
+    "yfinance>=1.2.0",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-aiosqlite = "^0.22.1"
-fastapi = "^0.135.1"
-ib_insync = "^0.9.86"
-pandas = "^2.1.4"
-uvicorn = "^0.41.0"
-yfinance = "^1.2.0"
+[project.scripts]
+main = "server:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "ty>=0.0.1a1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "PL"]
+ignore = [
+    "E501",   # long lines
+    "PLR0913", # too many args
+    "PLR2004", # magic values in tests/comparisons
+    "PLR0912", # too many branches
+    "PLR0915", # too many statements
+    "B008",   # FastAPI uses mutable-default-like patterns (File(), Query())
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ty.src]
+include = ["server.py", "finance.py", "db.py", "ibkr.py", "models.py", "snapshot.py"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = []
+only-include = ["server.py", "finance.py", "db.py", "ibkr.py", "models.py", "snapshot.py", "trade_log.py", "rebuild_history.py", "connect_tws.py", "static"]

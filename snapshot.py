@@ -1,10 +1,9 @@
 import asyncio
-import csv
 from datetime import date
 from pathlib import Path
 
+from db import init_db, insert_trades, save_snapshot, upsert_positions
 from ibkr import ib_conn
-from db import init_db, save_snapshot, upsert_positions, insert_trades
 
 SNAPSHOTS_DIR = Path(__file__).parent / "data" / "snapshots"
 
@@ -28,14 +27,16 @@ async def take_snapshot():
     today = date.today().isoformat()
     snap_rows = []
     for p in portfolio:
-        snap_rows.append({
-            "symbol": p["symbol"],
-            "quantity": p["quantity"],
-            "market_price": p["market_price"],
-            "market_value": p["market_value"],
-            "day_pnl": p["unrealized_pnl"],
-            "cost_basis": p["avg_cost"] * p["quantity"],
-        })
+        snap_rows.append(
+            {
+                "symbol": p["symbol"],
+                "quantity": p["quantity"],
+                "market_price": p["market_price"],
+                "market_value": p["market_value"],
+                "day_pnl": p["unrealized_pnl"],
+                "cost_basis": p["avg_cost"] * p["quantity"],
+            }
+        )
     await save_snapshot(today, snap_rows)
     print(f"Snapshot saved for {today}")
 

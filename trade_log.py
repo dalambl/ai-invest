@@ -10,15 +10,12 @@ Usage:
 """
 
 import argparse
-import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-
 from ib_insync import IB
 from ib_insync.flexreport import FlexReport
-
 
 OUTPUT_DIR = Path(__file__).parent / "data"
 TRADES_CSV = OUTPUT_DIR / "trades.csv"
@@ -26,13 +23,33 @@ POSITIONS_CSV = OUTPUT_DIR / "positions.csv"
 RECONCILIATION_CSV = OUTPUT_DIR / "reconciliation.csv"
 
 TRADE_COLUMNS = [
-    "trade_date", "symbol", "description", "asset_class", "action",
-    "quantity", "price", "currency", "commission", "net_amount",
-    "exchange", "order_type", "account", "trade_id",
+    "trade_date",
+    "symbol",
+    "description",
+    "asset_class",
+    "action",
+    "quantity",
+    "price",
+    "currency",
+    "commission",
+    "net_amount",
+    "exchange",
+    "order_type",
+    "account",
+    "trade_id",
 ]
 POSITION_COLUMNS = [
-    "timestamp", "account", "symbol", "sec_type", "quantity", "avg_cost",
-    "market_price", "market_value", "unrealized_pnl", "realized_pnl", "currency",
+    "timestamp",
+    "account",
+    "symbol",
+    "sec_type",
+    "quantity",
+    "avg_cost",
+    "market_price",
+    "market_value",
+    "unrealized_pnl",
+    "realized_pnl",
+    "currency",
 ]
 
 
@@ -61,22 +78,24 @@ def fetch_flex_trades(token=None, query_id=None, path=None):
     rows = []
     for t in trades:
         d = t.__dict__
-        rows.append({
-            "trade_date": d.get("tradeDate") or d.get("dateTime", ""),
-            "symbol": d.get("symbol", ""),
-            "description": d.get("description", ""),
-            "asset_class": d.get("assetCategory", d.get("secType", "")),
-            "action": d.get("buySell", d.get("side", "")),
-            "quantity": d.get("quantity", 0),
-            "price": d.get("tradePrice", d.get("price", 0)),
-            "currency": d.get("currency", ""),
-            "commission": d.get("ibCommission", d.get("commission", 0)),
-            "net_amount": d.get("netCash", d.get("proceeds", 0)),
-            "exchange": d.get("exchange", ""),
-            "order_type": d.get("orderType", ""),
-            "account": d.get("accountId", d.get("acctAlias", "")),
-            "trade_id": d.get("tradeID", d.get("execId", "")),
-        })
+        rows.append(
+            {
+                "trade_date": d.get("tradeDate") or d.get("dateTime", ""),
+                "symbol": d.get("symbol", ""),
+                "description": d.get("description", ""),
+                "asset_class": d.get("assetCategory", d.get("secType", "")),
+                "action": d.get("buySell", d.get("side", "")),
+                "quantity": d.get("quantity", 0),
+                "price": d.get("tradePrice", d.get("price", 0)),
+                "currency": d.get("currency", ""),
+                "commission": d.get("ibCommission", d.get("commission", 0)),
+                "net_amount": d.get("netCash", d.get("proceeds", 0)),
+                "exchange": d.get("exchange", ""),
+                "order_type": d.get("orderType", ""),
+                "account": d.get("accountId", d.get("acctAlias", "")),
+                "trade_id": d.get("tradeID", d.get("execId", "")),
+            }
+        )
 
     df = pd.DataFrame(rows, columns=TRADE_COLUMNS)
     df["trade_date"] = pd.to_datetime(df["trade_date"], errors="coerce")
@@ -93,31 +112,8 @@ def fetch_live_trades(ib):
     for fill in fills:
         ex = fill.execution
         c = fill.contract
-        rows.append({
-            "trade_date": str(ex.time),
-            "symbol": c.symbol,
-            "description": c.localSymbol or c.symbol,
-            "asset_class": c.secType,
-            "action": "BUY" if ex.side == "BOT" else "SELL",
-            "quantity": float(ex.shares),
-            "price": float(ex.price),
-            "currency": c.currency,
-            "commission": float(fill.commissionReport.commission) if fill.commissionReport else 0,
-            "net_amount": round(float(ex.shares) * float(ex.price) * (1 if ex.side == "BOT" else -1), 2),
-            "exchange": ex.exchange,
-            "order_type": "",
-            "account": ex.acctNumber,
-            "trade_id": ex.execId,
-        })
-
-    completed = ib.reqCompletedOrders(apiOnly=False)
-    print(f"  Completed orders: {len(completed)}")
-    for trade in completed:
-        order = trade.order
-        c = trade.contract
-        for fill in trade.fills:
-            ex = fill.execution
-            rows.append({
+        rows.append(
+            {
                 "trade_date": str(ex.time),
                 "symbol": c.symbol,
                 "description": c.localSymbol or c.symbol,
@@ -126,13 +122,48 @@ def fetch_live_trades(ib):
                 "quantity": float(ex.shares),
                 "price": float(ex.price),
                 "currency": c.currency,
-                "commission": float(fill.commissionReport.commission) if fill.commissionReport else 0,
-                "net_amount": round(float(ex.shares) * float(ex.price) * (1 if ex.side == "BOT" else -1), 2),
+                "commission": float(fill.commissionReport.commission)
+                if fill.commissionReport
+                else 0,
+                "net_amount": round(
+                    float(ex.shares) * float(ex.price) * (1 if ex.side == "BOT" else -1), 2
+                ),
                 "exchange": ex.exchange,
-                "order_type": order.orderType,
+                "order_type": "",
                 "account": ex.acctNumber,
                 "trade_id": ex.execId,
-            })
+            }
+        )
+
+    completed = ib.reqCompletedOrders(apiOnly=False)
+    print(f"  Completed orders: {len(completed)}")
+    for trade in completed:
+        order = trade.order
+        c = trade.contract
+        for fill in trade.fills:
+            ex = fill.execution
+            rows.append(
+                {
+                    "trade_date": str(ex.time),
+                    "symbol": c.symbol,
+                    "description": c.localSymbol or c.symbol,
+                    "asset_class": c.secType,
+                    "action": "BUY" if ex.side == "BOT" else "SELL",
+                    "quantity": float(ex.shares),
+                    "price": float(ex.price),
+                    "currency": c.currency,
+                    "commission": float(fill.commissionReport.commission)
+                    if fill.commissionReport
+                    else 0,
+                    "net_amount": round(
+                        float(ex.shares) * float(ex.price) * (1 if ex.side == "BOT" else -1), 2
+                    ),
+                    "exchange": ex.exchange,
+                    "order_type": order.orderType,
+                    "account": ex.acctNumber,
+                    "trade_id": ex.execId,
+                }
+            )
 
     df = pd.DataFrame(rows, columns=TRADE_COLUMNS)
     if not df.empty:
@@ -150,36 +181,54 @@ def fetch_positions(ib):
     rows = []
     for pos in positions:
         c = pos.contract
-        rows.append({
-            "timestamp": now,
-            "account": pos.account,
-            "symbol": c.symbol,
-            "sec_type": c.secType,
-            "quantity": float(pos.position),
-            "avg_cost": round(pos.avgCost, 4),
-            "market_price": 0,
-            "market_value": round(float(pos.position) * pos.avgCost, 2),
-            "unrealized_pnl": 0,
-            "realized_pnl": 0,
-            "currency": c.currency,
-        })
+        rows.append(
+            {
+                "timestamp": now,
+                "account": pos.account,
+                "symbol": c.symbol,
+                "sec_type": c.secType,
+                "quantity": float(pos.position),
+                "avg_cost": round(pos.avgCost, 4),
+                "market_price": 0,
+                "market_value": round(float(pos.position) * pos.avgCost, 2),
+                "unrealized_pnl": 0,
+                "realized_pnl": 0,
+                "currency": c.currency,
+            }
+        )
     return pd.DataFrame(rows, columns=POSITION_COLUMNS)
 
 
 def reconcile(positions_df, trades_df):
     if trades_df.empty and positions_df.empty:
-        return pd.DataFrame(columns=["symbol", "position_qty", "trade_net_qty", "difference", "status"])
+        return pd.DataFrame(
+            columns=["symbol", "position_qty", "trade_net_qty", "difference", "status"]
+        )
 
     if not trades_df.empty:
         tn = trades_df.copy()
         tn["signed"] = tn.apply(
-            lambda r: r["quantity"] if str(r["action"]).upper() in ("BUY", "BOT") else -r["quantity"], axis=1)
-        ts = tn.groupby("symbol")["signed"].sum().reset_index().rename(columns={"signed": "trade_net_qty"})
+            lambda r: (
+                r["quantity"] if str(r["action"]).upper() in ("BUY", "BOT") else -r["quantity"]
+            ),
+            axis=1,
+        )
+        ts = (
+            tn.groupby("symbol")["signed"]
+            .sum()
+            .reset_index()
+            .rename(columns={"signed": "trade_net_qty"})
+        )
     else:
         ts = pd.DataFrame(columns=["symbol", "trade_net_qty"])
 
     if not positions_df.empty:
-        ps = positions_df.groupby("symbol")["quantity"].sum().reset_index().rename(columns={"quantity": "position_qty"})
+        ps = (
+            positions_df.groupby("symbol")["quantity"]
+            .sum()
+            .reset_index()
+            .rename(columns={"quantity": "position_qty"})
+        )
     else:
         ps = pd.DataFrame(columns=["symbol", "position_qty"])
 
@@ -223,7 +272,9 @@ def main():
     ib = None
 
     if args.flex_token or args.flex_file:
-        flex_trades = fetch_flex_trades(token=args.flex_token, query_id=args.flex_query_id, path=args.flex_file)
+        flex_trades = fetch_flex_trades(
+            token=args.flex_token, query_id=args.flex_query_id, path=args.flex_file
+        )
         trades_df = pd.concat([trades_df, flex_trades], ignore_index=True)
 
     if args.live:

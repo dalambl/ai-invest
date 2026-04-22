@@ -196,7 +196,7 @@ async function loadPerformance() {
     } catch { }
 
     try {
-        const res = await fetch(`${API}/api/pnl/timeseries?from_date=2000-01-01&to_date=${new Date().toISOString().slice(0, 10)}`);
+        const res = await fetch(`${API}/api/returns/monthly?from_date=2000-01-01&to_date=${new Date().toISOString().slice(0, 10)}`);
         const data = await res.json();
         renderMonthlyGrid(data);
     } catch { }
@@ -281,19 +281,13 @@ function renderValueChart(data) {
 }
 
 function renderMonthlyGrid(data) {
-    if (!data.dates || !data.dates.length) {
+    // `data` is { monthly: { "YYYY-MM": pct }, yearly: { "YYYY": pct } }
+    const monthly = (data && data.monthly) || {};
+    const yearly = (data && data.yearly) || {};
+    const years = new Set(Object.keys(monthly).map(k => k.slice(0, 4)));
+    if (!years.size) {
         document.getElementById('monthly-grid').innerHTML = '<div style="color:var(--text2);padding:20px">No snapshot data</div>';
         return;
-    }
-    const monthly = {};
-    const years = new Set();
-    for (let i = 1; i < data.dates.length; i++) {
-        const d = data.dates[i];
-        const y = d.slice(0, 4), m = d.slice(5, 7);
-        years.add(y);
-        const key = `${y}-${m}`;
-        if (!monthly[key]) monthly[key] = { start: data.values[i - 1], end: data.values[i] };
-        else monthly[key].end = data.values[i];
     }
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     let html = '<div class="monthly-grid"><div class="monthly-header"></div>';
@@ -302,22 +296,21 @@ function renderMonthlyGrid(data) {
 
     for (const year of [...years].sort()) {
         html += `<div class="monthly-header">${year}</div>`;
-        let yearReturn = 0;
         for (let m = 1; m <= 12; m++) {
             const key = `${year}-${String(m).padStart(2, '0')}`;
-            const d = monthly[key];
-            if (d && d.start) {
-                const ret = (d.end / d.start - 1) * 100;
-                yearReturn += ret;
+            const ret = monthly[key];
+            if (ret == null) {
+                html += '<div class="monthly-cell">—</div>';
+            } else {
                 const bg = ret >= 0 ? `rgba(63,185,80,${Math.min(Math.abs(ret) / 10, 0.6)})` :
                     `rgba(248,81,73,${Math.min(Math.abs(ret) / 10, 0.6)})`;
                 html += `<div class="monthly-cell" style="background:${bg}" title="${ret.toFixed(2)}%">${ret.toFixed(1)}</div>`;
-            } else {
-                html += '<div class="monthly-cell">—</div>';
             }
         }
-        const ybg = yearReturn >= 0 ? 'var(--green)' : 'var(--red)';
-        html += `<div class="monthly-cell" style="color:${ybg};font-weight:700">${yearReturn.toFixed(1)}</div>`;
+        const yr = yearly[year];
+        const ybg = (yr ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+        const yrText = yr == null ? '—' : yr.toFixed(1);
+        html += `<div class="monthly-cell" style="color:${ybg};font-weight:700">${yrText}</div>`;
     }
     html += '</div>';
     document.getElementById('monthly-grid').innerHTML = html;

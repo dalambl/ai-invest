@@ -5,13 +5,16 @@ Parses buys/sells/dividends, infers pre-existing positions,
 fetches historical prices from IB, and generates daily snapshots.
 """
 
-import asyncio
 import csv
+import json
 import logging
 import sqlite3
+import urllib.request
 from collections import defaultdict
-from datetime import datetime, date, timedelta
+from datetime import date
 from pathlib import Path
+
+import yfinance as yf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
@@ -25,8 +28,6 @@ SYMBOL_MAP = {
     "M6EM6": "M6E",
     "BIPC.OLD": "BIPC",
 }
-
-SKIP_SYMBOLS = set()
 
 
 def parse_float(s):
@@ -48,7 +49,21 @@ def parse_transactions(csv_path):
             parts = next(csv.reader([line]))
             if len(parts) < 12:
                 continue
-            _, _, dt, account, description, tx_type, symbol, qty, price, currency, gross, commission, net = parts[:13]
+            (
+                _,
+                _,
+                dt,
+                account,
+                description,
+                tx_type,
+                symbol,
+                qty,
+                price,
+                currency,
+                gross,
+                commission,
+                net,
+            ) = parts[:13]
 
             symbol = symbol.strip()
             if " " in symbol and len(symbol) > 10:
@@ -59,19 +74,21 @@ def parse_transactions(csv_path):
             if not symbol or symbol in SKIP_SYMBOLS:
                 continue
 
-            transactions.append({
-                "date": dt.strip(),
-                "account": account.strip(),
-                "description": description.strip(),
-                "type": tx_type.strip(),
-                "symbol": symbol,
-                "quantity": parse_float(qty),
-                "price": parse_float(price),
-                "currency": currency.strip(),
-                "gross": parse_float(gross),
-                "commission": parse_float(commission),
-                "net": parse_float(net),
-            })
+            transactions.append(
+                {
+                    "date": dt.strip(),
+                    "account": account.strip(),
+                    "description": description.strip(),
+                    "type": tx_type.strip(),
+                    "symbol": symbol,
+                    "quantity": parse_float(qty),
+                    "price": parse_float(price),
+                    "currency": currency.strip(),
+                    "gross": parse_float(gross),
+                    "commission": parse_float(commission),
+                    "net": parse_float(net),
+                }
+            )
 
     transactions.sort(key=lambda t: t["date"])
     return transactions
@@ -82,8 +99,14 @@ def get_current_positions():
     db.row_factory = sqlite3.Row
     rows = db.execute("SELECT symbol, quantity, avg_cost, sec_type FROM positions").fetchall()
     db.close()
-    return {r["symbol"]: {"quantity": r["quantity"], "avg_cost": r["avg_cost"],
-                           "sec_type": r["sec_type"]} for r in rows}
+    return {
+        r["symbol"]: {
+            "quantity": r["quantity"],
+            "avg_cost": r["avg_cost"],
+            "sec_type": r["sec_type"],
+        }
+        for r in rows
+    }
 
 
 def compute_position_history(transactions, current_positions):
@@ -99,8 +122,11 @@ def compute_position_history(transactions, current_positions):
         elif tx["type"] == "Sell":
             sells[sym] += abs(tx["quantity"])
 
-    all_symbols = set(list(buys.keys()) + list(sells.keys()) +
-                      [tx["symbol"] for tx in transactions if tx["type"] == "Dividend"])
+    all_symbols = set(
+        list(buys.keys())
+        + list(sells.keys())
+        + [tx["symbol"] for tx in transactions if tx["type"] == "Dividend"]
+    )
     for sym in current_positions:
         all_symbols.add(sym)
 
@@ -187,12 +213,17 @@ def build_daily_positions(transactions, pre_existing, current_positions):
         dividend_snapshots[dt] = dict(dividends_cum)
         realized_pnl_snapshots[dt] = round(realized_pnl, 2)
 
-    return position_snapshots, cost_snapshots, dividend_snapshots, realized_pnl_snapshots, needs_cost_init
+    return (
+        position_snapshots,
+        cost_snapshots,
+        dividend_snapshots,
+        realized_pnl_snapshots,
+        needs_cost_init,
+    )
 
 
 def fetch_yahoo_prices(sym, yahoo_ticker, start_date, end_date):
     """Fetch historical daily close prices from Yahoo Finance."""
-    import yfinance as yf
     try:
         ticker = yf.Ticker(yahoo_ticker)
         df = ticker.history(start=start_date, end=end_date, auto_adjust=True)
@@ -223,9 +254,6 @@ SKIP_SYMBOLS = {"M6E", "OXY WS", "NVDA", "PLTR", "QQQ"}
 
 def fetch_all_historical_prices(symbols, start_date, end_date):
     """Fetch historical daily prices from IB API, with Yahoo Finance as fallback."""
-    import urllib.request
-    import json
-
     API = "http://localhost:8000"
     prices = {}
 
@@ -234,7 +262,7 @@ def fetch_all_historical_prices(symbols, start_date, end_date):
 
     # Fetch from IB
     for i, sym in enumerate(ib_symbols):
-        log.info(f"  [IB {i+1}/{len(ib_symbols)}] Fetching {sym}...")
+        log.info(f"  [IB {i + 1}/{len(ib_symbols)}] Fetching {sym}...")
         try:
             url = f"{API}/api/market/history/{sym}?period=5y"
             req = urllib.request.Request(url)
@@ -253,7 +281,7 @@ def fetch_all_historical_prices(symbols, start_date, end_date):
     # Fetch from Yahoo Finance
     for i, sym in enumerate(yahoo_symbols):
         yahoo_ticker = YAHOO_TICKER_MAP.get(sym, sym)
-        log.info(f"  [Yahoo {i+1}/{len(yahoo_symbols)}] Fetching {sym} as {yahoo_ticker}...")
+        log.info(f"  [Yahoo {i + 1}/{len(yahoo_symbols)}] Fetching {sym} as {yahoo_ticker}...")
         yprices = fetch_yahoo_prices(sym, yahoo_ticker, start_date, end_date)
         if yprices:
             prices[sym] = yprices
@@ -272,8 +300,14 @@ def get_trading_days(prices):
     return sorted(all_days)
 
 
-def generate_snapshots(position_snapshots, cost_snapshots, dividend_snapshots,
-                       realized_pnl_snapshots, needs_cost_init, prices):
+def generate_snapshots(
+    position_snapshots,
+    cost_snapshots,
+    dividend_snapshots,
+    realized_pnl_snapshots,
+    needs_cost_init,
+    prices,
+):
     """Generate daily snapshot rows for every trading day.
 
     For pre-existing positions with unknown cost, uses the market price on
@@ -355,29 +389,33 @@ def generate_snapshots(position_snapshots, cost_snapshots, dividend_snapshots,
             div_cum = round(current_divs.get(sym, 0), 2)
             total_ret = round(pnl + div_cum, 2)
 
-            rows.append({
-                "symbol": sym,
-                "quantity": qty,
-                "market_price": round(price, 4),
-                "market_value": mv,
-                "day_pnl": pnl,
-                "cost_basis": round(cost_basis, 2),
-                "dividends_cumulative": div_cum,
-                "total_return": total_ret,
-            })
+            rows.append(
+                {
+                    "symbol": sym,
+                    "quantity": qty,
+                    "market_price": round(price, 4),
+                    "market_value": mv,
+                    "day_pnl": pnl,
+                    "cost_basis": round(cost_basis, 2),
+                    "dividends_cumulative": div_cum,
+                    "total_return": total_ret,
+                }
+            )
 
         # Add a pseudo-row to track cumulative realized P&L
         if current_realized != 0:
-            rows.append({
-                "symbol": "__REALIZED__",
-                "quantity": 0,
-                "market_price": 0,
-                "market_value": 0,
-                "day_pnl": round(current_realized, 2),
-                "cost_basis": 0,
-                "dividends_cumulative": 0,
-                "total_return": round(current_realized, 2),
-            })
+            rows.append(
+                {
+                    "symbol": "__REALIZED__",
+                    "quantity": 0,
+                    "market_price": 0,
+                    "market_value": 0,
+                    "day_pnl": round(current_realized, 2),
+                    "cost_basis": 0,
+                    "dividends_cumulative": 0,
+                    "total_return": round(current_realized, 2),
+                }
+            )
 
         if rows:
             snapshots[dt] = rows
@@ -391,33 +429,62 @@ def save_all_to_db(snapshots, dividends_list, trades_list=None):
     db.execute("DELETE FROM snapshots")
     for dt, rows in sorted(snapshots.items()):
         for r in rows:
-            db.execute("""
+            db.execute(
+                """
                 INSERT OR REPLACE INTO snapshots
                 (date, symbol, quantity, market_price, market_value, day_pnl, cost_basis,
                  dividends_cumulative, total_return)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (dt, r["symbol"], r["quantity"], r["market_price"],
-                  r["market_value"], r["day_pnl"], r["cost_basis"],
-                  r.get("dividends_cumulative", 0), r.get("total_return", 0)))
+            """,
+                (
+                    dt,
+                    r["symbol"],
+                    r["quantity"],
+                    r["market_price"],
+                    r["market_value"],
+                    r["day_pnl"],
+                    r["cost_basis"],
+                    r.get("dividends_cumulative", 0),
+                    r.get("total_return", 0),
+                ),
+            )
 
     db.execute("DELETE FROM dividends")
     for d in dividends_list:
-        db.execute("""
+        db.execute(
+            """
             INSERT OR IGNORE INTO dividends (date, symbol, amount, description)
             VALUES (?, ?, ?, ?)
-        """, (d["date"], d["symbol"], d["amount"], d.get("description", "")))
+        """,
+            (d["date"], d["symbol"], d["amount"], d.get("description", "")),
+        )
 
     if trades_list:
         for t in trades_list:
-            db.execute("""
+            db.execute(
+                """
                 INSERT OR IGNORE INTO trades (trade_date, symbol, description, asset_class,
                     action, quantity, price, currency, commission, net_amount,
                     exchange, order_type, account, trade_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (t["trade_date"], t["symbol"], t["description"], t["asset_class"],
-                  t["action"], t["quantity"], t["price"], t["currency"],
-                  t["commission"], t["net_amount"], t["exchange"], t["order_type"],
-                  t["account"], t["trade_id"]))
+            """,
+                (
+                    t["trade_date"],
+                    t["symbol"],
+                    t["description"],
+                    t["asset_class"],
+                    t["action"],
+                    t["quantity"],
+                    t["price"],
+                    t["currency"],
+                    t["commission"],
+                    t["net_amount"],
+                    t["exchange"],
+                    t["order_type"],
+                    t["account"],
+                    t["trade_id"],
+                ),
+            )
 
     db.commit()
 
@@ -436,8 +503,17 @@ def save_snapshot_csvs(snapshots):
     for existing in SNAPSHOTS_DIR.glob("*.csv"):
         existing.unlink()
 
-    fieldnames = ["date", "symbol", "quantity", "market_price", "market_value",
-                  "day_pnl", "cost_basis", "dividends_cumulative", "total_return"]
+    fieldnames = [
+        "date",
+        "symbol",
+        "quantity",
+        "market_price",
+        "market_value",
+        "day_pnl",
+        "cost_basis",
+        "dividends_cumulative",
+        "total_return",
+    ]
 
     for dt, rows in sorted(snapshots.items()):
         csv_path = SNAPSHOTS_DIR / f"{dt}.csv"
@@ -475,7 +551,7 @@ def compute_purchase_dates_and_costs(transactions, pre_existing):
             sell_qty = abs(tx["quantity"])
             if lot["qty"] > 0:
                 fraction = min(sell_qty / lot["qty"], 1.0)
-                lot["cost"] *= (1 - fraction)
+                lot["cost"] *= 1 - fraction
                 lot["qty"] -= sell_qty
                 if lot["qty"] <= 0.001:
                     lot["qty"] = 0
@@ -545,8 +621,9 @@ def main():
     log.info(f"Pre-existing positions: {pre_existing}")
 
     log.info("Building daily position history...")
-    position_snaps, cost_snaps, dividend_snaps, realized_pnl_snaps, needs_cost_init = build_daily_positions(
-        transactions, pre_existing, current_positions)
+    position_snaps, cost_snaps, dividend_snaps, realized_pnl_snaps, needs_cost_init = (
+        build_daily_positions(transactions, pre_existing, current_positions)
+    )
     log.info(f"Position snapshots for {len(position_snaps)} dates")
     if needs_cost_init:
         log.info(f"Positions needing cost init from price: {sorted(needs_cost_init)}")
@@ -560,39 +637,50 @@ def main():
     start_date = all_dates[0] if all_dates else "2023-01-31"
     end_date = date.today().isoformat()
 
-    log.info(f"Fetching historical prices for {len(all_symbols)} symbols from {start_date} to {end_date}...")
+    log.info(
+        f"Fetching historical prices for {len(all_symbols)} symbols from {start_date} to {end_date}..."
+    )
     prices = fetch_all_historical_prices(sorted(all_symbols), start_date, end_date)
     log.info(f"Got prices for {len(prices)} symbols")
 
     log.info("Generating snapshots...")
-    snapshots = generate_snapshots(position_snaps, cost_snaps, dividend_snaps,
-                                   realized_pnl_snaps, needs_cost_init, prices)
+    snapshots = generate_snapshots(
+        position_snaps, cost_snaps, dividend_snaps, realized_pnl_snaps, needs_cost_init, prices
+    )
     log.info(f"Generated {len(snapshots)} snapshot dates")
 
-    dividends_list = [{"date": t["date"], "symbol": t["symbol"],
-                       "amount": t["net"], "description": t["description"]}
-                      for t in transactions if t["type"] == "Dividend"]
+    dividends_list = [
+        {
+            "date": t["date"],
+            "symbol": t["symbol"],
+            "amount": t["net"],
+            "description": t["description"],
+        }
+        for t in transactions
+        if t["type"] == "Dividend"
+    ]
 
     trades_list = []
     for tx in transactions:
         if tx["type"] in ("Buy", "Sell"):
-            side_mult = 1 if tx["type"] == "Buy" else -1
-            trades_list.append({
-                "trade_date": tx["date"],
-                "symbol": tx["symbol"],
-                "description": tx["description"],
-                "asset_class": "STK",
-                "action": tx["type"].upper(),
-                "quantity": tx["quantity"],
-                "price": tx["price"],
-                "currency": tx["currency"],
-                "commission": abs(tx["commission"]),
-                "net_amount": round(tx["net"], 2),
-                "exchange": "",
-                "order_type": "",
-                "account": tx["account"],
-                "trade_id": f"{tx['date']}_{tx['symbol']}_{tx['quantity']}_{tx['price']}",
-            })
+            trades_list.append(
+                {
+                    "trade_date": tx["date"],
+                    "symbol": tx["symbol"],
+                    "description": tx["description"],
+                    "asset_class": "STK",
+                    "action": tx["type"].upper(),
+                    "quantity": tx["quantity"],
+                    "price": tx["price"],
+                    "currency": tx["currency"],
+                    "commission": abs(tx["commission"]),
+                    "net_amount": round(tx["net"], 2),
+                    "exchange": "",
+                    "order_type": "",
+                    "account": tx["account"],
+                    "trade_id": f"{tx['date']}_{tx['symbol']}_{tx['quantity']}_{tx['price']}",
+                }
+            )
 
     log.info("Saving to database...")
     save_all_to_db(snapshots, dividends_list, trades_list)
