@@ -1,0 +1,173 @@
+# 003 — Options, cost basis, FX P/L, and trade history fixes
+
+## Context
+
+After importing the user's real 2025 IB Activity Statement
+(`U640574_2025_2025.csv`) and comparing the snapshot pipeline output
+against it, four classes of discrepancy were identified:
+
+1. **Options collapsed to underlier symbol.** A single underlier (e.g.
+   `NVDA`) ended up holding multiple option positions and the stock,
+   all summed together. Multiplier was treated as 1, so option cost
+   basis and market value were ~100× too small.
+2. **Cost basis drift.** `compute_position_history` and
+   `build_daily_positions` were using `gross_amount` (premium only) as
+   the cost basis. IB's convention is *commission-inclusive* on both
+   sides (buy adds commission to cost basis; sell subtracts commission
+   from realized proceeds). Drift was small per-trade but compounded
+   into a noticeable overall realized-P/L gap.
+3. **No FX P/L tracking.** The IB statement reports a Cash FX
+   Translation Gain/Loss line and per-currency unrealized FX P/L. The
+   pipeline ignored both, contributing ~$135 to the year-end P/L gap.
+4. **Trade history showed underlier instead of contract.** Options
+   trades were rendered as `NVDA` rather than
+   `NVDA 17DEC27 110 P`, making the trade log unreadable.
+
+## Changes
+
+### `ibkr.py`
+
+* New `_human_symbol(c)` helper + `_MONTH_ABBR` constant.
+* `get_fills()` and `get_completed_orders()` now emit
+  `_human_symbol(contract)` instead of `contract.symbol`. Stocks are
+  unchanged; options become `NVDA 17DEC27 110 P`; futures become
+  `M6E 15JUN26`.
+
+### `rebuild_history.py`
+
+* Removed the now-misleading `M6EM6 → M6E` alias from `SYMBOL_MAP`.
+* New `classify(description, raw_symbol)` returning
+  `(sec_type, normalized_symbol, multiplier)`:
+  * Options keyed by description (`"NVDA 17DEC27 110 P"`),
+    `sec_type="OPT"`, `multiplier=100`.
+  * Futures (currently the `M6E` family) tagged `sec_type="FUT"` and
+    skipped downstream.
+  * Stocks pass through `SYMBOL_MAP` for known aliases (e.g. BIPC.OLD).
+* `parse_transactions` writes `sec_type` and `multiplier` per row and
+  drops any future.
+* `build_daily_positions` now:
+  * Uses `abs(tx["net"])` (commission-inclusive) for *both* buys and
+    sells. Realized P/L = `proceeds_net - cost_basis`, so sell
+    commissions are subtracted exactly as IB does.
+  * Returns two extra dicts (`sec_types`, `multipliers`) so per-symbol
+    metadata is available downstream.
+* `generate_snapshots` writes per-row `sec_type` and `multiplier`,
+  computes market value as `qty * multiplier * price`, and stores the
+  per-share avg cost as `cost_basis / (qty * multiplier)`. The
+  `__REALIZED__` pseudo-row gets `sec_type="PSEUDO"`.
+* New `inject_fx_pnl_from_statements(snapshots)` walks
+  `data/U*_YYYY_YYYY.csv`, sums `fx_realized + fx_unrealized` per
+  statement, and appends a `__FX__` pseudo-row at each statement's
+  `period_end`.
+
+### `ib_statement.py` (new)
+
+A focused parser for the multi-section Activity Statement CSV. Pulls
+out:
+* Period start/end.
+* Open positions (per-lot summary rows, with multiplier and
+  unrealized P/L).
+* Realized & unrealized P/L per symbol (Forex bucketed separately).
+* Cash FX Translation Gain/Loss (base currency).
+* `find_statements(data_dir)` and `parse_when_generated(path)` helpers
+  used by the snapshot injector.
+
+### `finance.py`
+
+Added `FX_ROW = "__FX__"` and a `PSEUDO_ROWS` frozenset.
+`aggregate_snapshot_timeseries` now excludes both pseudo rows from
+*value/cost* but includes them in *day P&L / total return*, so
+realized and FX gains both flow into the headline P/L without
+inflating market value.
+
+### `db.py`
+
+Schema migration adds two nullable columns to `snapshots`:
+`sec_type TEXT DEFAULT 'STK'` and `multiplier REAL DEFAULT 1`. Reads
+and writes round-trip the new columns. Old snapshots remain readable
+because of the column defaults.
+
+### Tests
+
+* `tests/test_finance.py` — new
+  `test_aggregate_excludes_fx_row_from_value_and_cost`.
+* `tests/test_ib_statement.py` — eight tests against the real
+  `U640574_2025_2025.csv` covering period parsing, open positions
+  (stocks and options), multiplier handling, realized/unrealized
+  totals, FX P/L, and that Forex is excluded from per-symbol realized.
+* `tests/test_rebuild_history.py` — ten tests on `classify`,
+  `parse_transactions` (option preservation, futures exclusion), and
+  `build_daily_positions` (commission-inclusive cost basis, sell
+  commission deducted from realized).
+
+## Verification
+
+```
+uv run ruff format && uv run ruff check && uv run ty check && uv run pytest -q
+# 51 passed
+```
+
+The `test_ib_statement.py` cases assert against ground-truth values
+read directly out of the user's actual statement
+(realized=$11,395.35, unrealized=$32,024.13, FX
+realized=$72.04, FX unrealized=$62.54, AES cost basis=$8,242.79,
+NVDA option value=$1,035 with multiplier=100). All pass.
+
+## What still has to happen
+
+The DB and CSV snapshots on disk were generated by the *old* pipeline
+and so still carry the wrong option symbols, multiplier=1, and
+gross-amount cost basis. To reflect the new logic the user must
+re-run `rebuild_history.py` (which requires TWS or otherwise reachable
+historical data). The schema migration is forward-compatible so the
+server keeps working in the meantime; only the new columns will be
+empty / defaulted until the next rebuild.
+
+## Rebuild execution (2026-04-22)
+
+Ran `rebuild_history.py` end-to-end. Three follow-up fixes were
+needed:
+
+1. **DB migration in sync path.** `db.py:init_db()` adds the new
+   `sec_type` / `multiplier` columns asynchronously, but
+   `rebuild_history.save_all_to_db()` opens its own
+   `sqlite3.connect`. Added the same idempotent `ALTER TABLE` calls
+   there, guarded by `contextlib.suppress(sqlite3.OperationalError)`.
+2. **Statement file path.** `ib_statement.find_statements()` looks
+   under `data/`. Moved the user's `U640574_2025_2025.csv` from the
+   repo root into `data/`, and updated
+   `tests/test_ib_statement.py` to point there.
+3. **Phantom OPT/FUT seed positions.** `get_current_positions()` was
+   reading every row from the live `positions` table, including
+   underlier-collapsed `NVDA` (sec=OPT) / `PLTR` (sec=OPT) / `M6E`
+   (sec=FUT) rows left over from the pre-fix dashboard. Those
+   appeared as ghost stock positions alongside the correctly-rebuilt
+   `NVDA 17DEC27 110 P` / `PLTR 15JAN27 50 P`. Filter to STK only —
+   options/futures are re-derived from transactions with their full
+   contract symbol, so the OPT/FUT rows in `positions` would only
+   ever duplicate them.
+
+Final verification against the IB statement (year-end 2025):
+
+| Metric                    | Snapshot        | IB statement    | Δ          |
+|---------------------------|-----------------|-----------------|------------|
+| Unrealized (open positions) | $32,853.96    | $32,024.13      | +$830 (price-source noise: Yahoo close vs IB close) |
+| FX P/L (cumulative `__FX__`) | +$134.59     | +$134.59        | exact      |
+| NVDA 17DEC27 110 P value   | $1,050.59      | $1,035.00       | small (price) |
+| AES cost basis             | $7,715.49      | $8,242.80       | -$527 (likely missing pre-CSV lots) |
+
+All 51 tests still pass after these fixes.
+
+### Operational note: VS Code grabs port 8000
+
+`rebuild_history.fetch_all_historical_prices` calls
+`http://localhost:8000/api/market/history/...`. With server.py not
+running, the expected behaviour is instant `ConnectionRefused` →
+Yahoo fallback. In this environment VS Code (or its language server)
+is bound to 8000 and accepts the TCP connection but never replies, so
+each symbol burns the full 60-second `urlopen` timeout (~45 min
+total). Workaround during this rebuild was a one-line patch
+temporarily pointing `API` at an unbound port (8765), then reverted.
+Long-term, server.py should be running on 8000 with TWS up, or the
+script should treat any non-200 response as "skip to Yahoo" without
+hanging.
