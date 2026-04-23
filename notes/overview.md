@@ -65,9 +65,9 @@ via `(date, symbol, type, qty, price, net)`. User added a YTD
 export so March-April trades (including the AIR buy on 2026-04-21)
 are now captured with their real purchase dates instead of being
 treated as pre-existing. Post-rebuild: MV $308,544, Total Return
-$113,525. AIR purchase_date now 2026-04-21. 54 tests pass. Still
-open: automated Flex Web Service exports so the CSV never goes
-stale (needs Flex Query ID + Token from IB).
+$113,525. AIR purchase_date now 2026-04-21. 54 tests pass. CSV
+refresh is manual — user will re-export from IB as needed; no
+automated Flex fetcher wanted.
 
 ## Plan
 - Implement industry mapping per `005-industry-mapping-plan.md` (start

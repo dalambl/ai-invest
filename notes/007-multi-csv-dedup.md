@@ -36,11 +36,10 @@ FX = Unreal USD) to the cent.
 
 54 tests still pass; ruff/ty clean.
 
-## Followup: stale-data risk
+## Refresh workflow
 
-User wants regular automated re-exports so the CSV never gets
-behind current holdings again. That needs IB Flex Web Service:
-Flex Query ID + Token from IB Account Management, plus a small
-fetcher (two-step `SendRequest` → poll `GetStatement`) and a
-systemd user timer or cron entry. Credentials not yet supplied —
-tracked as open work.
+Re-export the YTD Activity Statement from IB, drop it into
+`data/` under any name matching `U640574.TRANSACTIONS*.csv`, and
+re-run `rebuild_history.py`. The dedup layer makes overlap safe.
+Automated fetch via Flex Web Service was discussed but declined —
+manual re-export only.
