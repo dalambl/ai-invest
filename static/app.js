@@ -111,11 +111,15 @@ function renderHoldings() {
     let rows = positions.map(p => {
         const hp = pnlMap[p.symbol] || {};
         const weight = totalMV ? (Math.abs(p.market_value || 0) / totalMV * 100) : 0;
-        const cost_basis = p.market_value - (p.unrealized_pnl || 0);
-        const pnl_pct = cost_basis ? ((p.unrealized_pnl || 0) / Math.abs(cost_basis) * 100) : 0;
+        // USD-denominated unrealized so the column reconciles with Stock + FX.
+        // Falls back to local unrealized_pnl when USD fields are absent.
+        const unrl = p.unrealized_pnl_usd != null ? p.unrealized_pnl_usd : (p.unrealized_pnl || 0);
+        const cb_usd = p.cost_basis_usd != null ? p.cost_basis_usd : (p.market_value - (p.unrealized_pnl || 0));
+        const pnl_pct = cb_usd ? (unrl / Math.abs(cb_usd) * 100) : 0;
         const divs = p.dividends_cumulative || 0;
-        const total_return = p.total_return || ((p.unrealized_pnl || 0) + divs);
+        const total_return = (p.total_return_usd != null) ? p.total_return_usd : (unrl + divs);
         return { ...p, weight, pnl_pct, dividends_cumulative: divs, total_return,
+                 unrealized_pnl_display: unrl,
                  horizon_pnl: hp.pnl || 0, horizon_pnl_pct: hp.pnl_pct || 0 };
     });
 
@@ -128,13 +132,20 @@ function renderHoldings() {
     }
 
     let totalUnrl = 0, totalHPnl = 0, totalMV2 = 0, totalDivs = 0, totalTR = 0;
+    let totalMVUsd = 0, totalStockPnl = 0, totalFxPnl = 0;
     let html = '';
     for (const r of rows) {
-        totalUnrl += r.unrealized_pnl || 0;
+        totalUnrl += r.unrealized_pnl_display || 0;
         totalHPnl += r.horizon_pnl || 0;
         totalMV2 += r.market_value || 0;
+        totalMVUsd += (r.market_value_usd != null ? r.market_value_usd : r.market_value) || 0;
+        totalStockPnl += r.stock_pnl_usd || 0;
+        totalFxPnl += r.fx_pnl_usd || 0;
         totalDivs += r.dividends_cumulative || 0;
         totalTR += r.total_return || 0;
+        const mvUsd = r.market_value_usd != null ? r.market_value_usd : r.market_value;
+        const stockPnl = r.stock_pnl_usd != null ? r.stock_pnl_usd : null;
+        const fxPnl = r.fx_pnl_usd != null ? r.fx_pnl_usd : null;
         html += `<tr>
             <td><strong>${r.symbol}</strong></td>
             <td>${r.sec_type || ''}</td>
@@ -143,8 +154,11 @@ function renderHoldings() {
             <td class="num">${fmtP(r.avg_cost)}</td>
             <td class="num">${fmtP(r.market_price)}</td>
             <td class="num">${fmt(r.market_value)}</td>
+            <td class="num">${fmt(mvUsd)}</td>
             <td class="num">${r.weight.toFixed(1)}%</td>
-            <td class="num ${clsPnl(r.unrealized_pnl)}">${fmtPnl(r.unrealized_pnl)}</td>
+            <td class="num ${clsPnl(r.unrealized_pnl_display)}">${fmtPnl(r.unrealized_pnl_display)}</td>
+            <td class="num ${clsPnl(stockPnl)}">${stockPnl == null ? '—' : fmtPnl(stockPnl)}</td>
+            <td class="num ${clsPnl(fxPnl)}">${fxPnl == null ? '—' : fmtPnl(fxPnl)}</td>
             <td class="num ${clsPnl(r.pnl_pct)}">${r.pnl_pct.toFixed(2)}%</td>
             <td class="num pos">${fmt(r.dividends_cumulative)}</td>
             <td class="num ${clsPnl(r.total_return)}">${fmtPnl(r.total_return)}</td>
@@ -156,8 +170,13 @@ function renderHoldings() {
     const totalPct = totalMV2 ? (totalHPnl / (totalMV2 - totalHPnl) * 100) : 0;
     html += `<tr class="summary-row">
         <td>TOTAL</td><td></td><td></td><td></td><td></td><td></td>
-        <td class="num">${fmt(totalMV2)}</td><td class="num">100%</td>
-        <td class="num ${clsPnl(totalUnrl)}">${fmtPnl(totalUnrl)}</td><td></td>
+        <td class="num">${fmt(totalMV2)}</td>
+        <td class="num">${fmt(totalMVUsd)}</td>
+        <td class="num">100%</td>
+        <td class="num ${clsPnl(totalUnrl)}">${fmtPnl(totalUnrl)}</td>
+        <td class="num ${clsPnl(totalStockPnl)}">${fmtPnl(totalStockPnl)}</td>
+        <td class="num ${clsPnl(totalFxPnl)}">${fmtPnl(totalFxPnl)}</td>
+        <td></td>
         <td class="num pos">${fmt(totalDivs)}</td>
         <td class="num ${clsPnl(totalTR)}">${fmtPnl(totalTR)}</td>
         <td class="num ${clsPnl(totalHPnl)}">${fmtPnl(totalHPnl)}</td>
@@ -329,6 +348,22 @@ async function loadRisk() {
         ];
         document.getElementById('risk-metrics').innerHTML = metrics.map(m =>
             `<div class="risk-card"><div class="label">${m.label}</div><div class="val ${m.cls}">${m.val}</div></div>`
+        ).join('');
+
+        const sf = data.sharpe_by_frequency || {};
+        const rfPct = data.risk_free_rate != null ? (data.risk_free_rate * 100).toFixed(2) + '%' : '—';
+        const rows = [
+            { freq: 'Daily', val: sf.daily, periods: 252 },
+            { freq: 'Weekly', val: sf.weekly, periods: 52 },
+            { freq: 'Monthly', val: sf.monthly, periods: 12 },
+        ];
+        document.getElementById('sharpe-body').innerHTML = rows.map(r =>
+            `<tr>
+                <td>${r.freq}</td>
+                <td class="num ${clsPnl(r.val)}">${r.val == null ? '—' : Number(r.val).toFixed(2)}</td>
+                <td class="num">${r.periods}</td>
+                <td>${rfPct}</td>
+            </tr>`
         ).join('');
     } catch { }
 

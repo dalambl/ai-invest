@@ -66,8 +66,11 @@
                             <th data-sort="avg_cost" class="num">Avg Cost</th>
                             <th data-sort="market_price" class="num">Price</th>
                             <th data-sort="market_value" class="num">Mkt Value</th>
+                            <th data-sort="market_value_usd" class="num">Mkt Value (USD)</th>
                             <th data-sort="weight" class="num">Weight %</th>
                             <th data-sort="unrealized_pnl" class="num">Unrl P&L</th>
+                            <th data-sort="stock_pnl_usd" class="num">Stock P&L</th>
+                            <th data-sort="fx_pnl_usd" class="num">FX P&L</th>
                             <th data-sort="pnl_pct" class="num">P&L %</th>
                             <th data-sort="dividends_cumulative" class="num">Divs</th>
                             <th data-sort="total_return" class="num">Total Ret</th>
@@ -120,6 +123,20 @@
             <div class="card">
                 <div class="card-title">Risk Metrics</div>
                 <div class="risk-grid" id="risk-metrics"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Sharpe by Frequency</div>
+                <div class="table-wrap">
+                    <table id="sharpe-table">
+                        <thead><tr>
+                            <th>Frequency</th>
+                            <th class="num">Sharpe Ratio</th>
+                            <th class="num">Periods / Year</th>
+                            <th>Risk-Free Rate</th>
+                        </tr></thead>
+                        <tbody id="sharpe-body"></tbody>
+                    </table>
+                </div>
             </div>
             <div class="card">
                 <div class="card-title">Drawdown</div>

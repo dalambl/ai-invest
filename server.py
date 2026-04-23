@@ -88,6 +88,22 @@ async def enrich_positions_from_db(positions):
             except Exception as e:
                 log.warning(f"Yahoo fallback failed for {sym}: {e}")
 
+    # Pull latest snapshot's USD-converted values + per-symbol FX so we can
+    # merge stock_pnl_usd / fx_pnl_usd / market_value_usd onto the live
+    # positions. For each symbol, walk back through recent snapshots to
+    # find one where the USD fields are actually populated — otherwise a
+    # stale mid-day sync row (no USD breakdown yet) would shadow the
+    # rebuild-populated row from the previous day.
+    snap_dates = await db.get_snapshot_dates()
+    latest_snap_by_sym: dict[str, dict] = {}
+    for d in reversed(snap_dates[-30:]):
+        for r in await db.get_snapshot(d):
+            sym = r["symbol"]
+            if sym in latest_snap_by_sym:
+                continue
+            if r.get("market_value_usd") is not None:
+                latest_snap_by_sym[sym] = r
+
     for p in positions:
         sym = p["symbol"]
         qty = p["quantity"]
@@ -108,6 +124,30 @@ async def enrich_positions_from_db(positions):
         d = div_cum.get(sym, 0)
         p["dividends_cumulative"] = round(d, 2)
         p["total_return"] = round(p.get("unrealized_pnl", 0) + d, 2)
+
+        # USD-converted fields. cost_basis_usd is historical (locked in at
+        # buy-time FX) so it comes from the snapshot. market_value_usd must
+        # be computed fresh from today's local market_value × current fx,
+        # not pulled from a stale snapshot row. Same for the P&L split.
+        snap = latest_snap_by_sym.get(sym, {})
+        fx_rate = snap.get("fx_rate") or 1.0
+        cost_local = snap.get("cost_basis") or (avg_cost * qty)
+        cost_basis_usd = snap.get("cost_basis_usd") or cost_local
+        mv_local = p.get("market_value", 0)
+        mv_usd = round(mv_local * fx_rate, 2)
+        stock_pnl_usd = round((mv_local - cost_local) * fx_rate, 2)
+        fx_pnl_usd = round((mv_usd - cost_basis_usd) - stock_pnl_usd, 2)
+        p["fx_rate"] = fx_rate
+        p["market_value_usd"] = mv_usd
+        p["cost_basis_usd"] = cost_basis_usd
+        p["stock_pnl_usd"] = stock_pnl_usd
+        p["fx_pnl_usd"] = fx_pnl_usd
+
+        # USD-denominated unrealized P&L (= mv_usd - cb_usd). For USD
+        # positions this equals unrealized_pnl. For foreign positions this
+        # is what reconciles with stock_pnl_usd + fx_pnl_usd in the UI.
+        p["unrealized_pnl_usd"] = round(mv_usd - cost_basis_usd, 2)
+        p["total_return_usd"] = round(p["unrealized_pnl_usd"] + p["dividends_cumulative"], 2)
 
     return positions
 
@@ -163,6 +203,12 @@ async def sync_positions():
                         "cost_basis": p["avg_cost"] * p["quantity"],
                         "dividends_cumulative": p.get("dividends_cumulative", 0),
                         "total_return": p.get("total_return", 0),
+                        "currency": p.get("currency") or "USD",
+                        "fx_rate": p.get("fx_rate") or 1.0,
+                        "market_value_usd": p.get("market_value_usd") or p["market_value"],
+                        "cost_basis_usd": p.get("cost_basis_usd") or p["avg_cost"] * p["quantity"],
+                        "stock_pnl_usd": p.get("stock_pnl_usd") or p["unrealized_pnl"],
+                        "fx_pnl_usd": p.get("fx_pnl_usd") or 0.0,
                     }
                     for p in portfolio
                 ]
@@ -219,7 +265,9 @@ async def positions():
             portfolio = await enrich_positions_from_db(portfolio)
             await db.upsert_positions(portfolio)
             return portfolio
-    return await db.get_positions()
+    # TWS offline — still merge snapshot-derived USD fields (stock_pnl_usd /
+    # fx_pnl_usd / market_value_usd) so the dashboard shows them.
+    return await enrich_positions_from_db(await db.get_positions())
 
 
 @app.get("/api/positions/history")
@@ -324,15 +372,21 @@ async def pnl_timeseries(from_date: str | None = None, to_date: str | None = Non
             "values": [],
             "returns": [],
             "pnl": [],
+            "stock_pnl": [],
+            "fx_pnl": [],
             "dividends": [],
             "total_return": [],
         }
 
     base_pnl = by_date[dates[0]]["pnl"]
+    base_stock = by_date[dates[0]]["stock_pnl"]
+    base_fx = by_date[dates[0]]["fx_pnl"]
     base_divs = by_date[dates[0]]["dividends"]
     base_tr = by_date[dates[0]]["total_return"]
     values = [round(by_date[d]["value"], 2) for d in dates]
     pnl = [round(by_date[d]["pnl"] - base_pnl, 2) for d in dates]
+    stock_pnl = [round(by_date[d]["stock_pnl"] - base_stock, 2) for d in dates]
+    fx_pnl = [round(by_date[d]["fx_pnl"] - base_fx, 2) for d in dates]
     dividends = [round(by_date[d]["dividends"] - base_divs, 2) for d in dates]
     total_return = [round(by_date[d]["total_return"] - base_tr, 2) for d in dates]
     returns = finance.daily_linked_returns(
@@ -344,6 +398,8 @@ async def pnl_timeseries(from_date: str | None = None, to_date: str | None = Non
         "values": values,
         "returns": returns,
         "pnl": pnl,
+        "stock_pnl": stock_pnl,
+        "fx_pnl": fx_pnl,
         "dividends": dividends,
         "total_return": total_return,
     }
@@ -454,7 +510,9 @@ def _exposure_breakdown(positions: list[dict], key: str) -> list[dict]:
     total = 0.0
     for p in positions:
         cat = p.get(key) or "OTHER"
-        v = abs(p.get("market_value", 0) or 0)
+        # Use USD market value when available so cross-currency totals are
+        # comparable; fall back to local market_value otherwise.
+        v = abs(p.get("market_value_usd") or p.get("market_value", 0) or 0)
         by_cat[cat] = by_cat.get(cat, 0) + v
         total += v
     return [
@@ -482,15 +540,37 @@ async def exposure_currency():
 
 
 @app.get("/api/risk")
-async def risk():
-    ts = await pnl_timeseries()
-    return finance.risk_metrics(ts["values"], ts["pnl"])
+async def risk(risk_free_rate: float = 0.045, from_date: str | None = None):
+    """Risk metrics with annualized Sharpe at three sampling frequencies.
+
+    Defaults to the earliest snapshot date so risk is computed over the
+    full history (matches the monthly tab's calendar-year semantics).
+    Default Rf=4.5% reflects T-bill cash yield over the sample period;
+    override via query param.
+    """
+    if not from_date:
+        snap_dates = await db.get_snapshot_dates()
+        from_date = snap_dates[0] if snap_dates else "2000-01-01"
+    ts = await pnl_timeseries(from_date=from_date)
+    base = finance.risk_metrics(ts["values"], ts["pnl"], risk_free_rate=risk_free_rate)
+    sharpes = finance.sharpe_by_frequency(
+        ts["dates"], ts["values"], ts["pnl"], risk_free_rate=risk_free_rate
+    )
+    return {**base, "sharpe_by_frequency": sharpes, "risk_free_rate": risk_free_rate}
 
 
 @app.get("/api/returns/monthly")
 async def returns_monthly(from_date: str | None = None, to_date: str | None = None):
     """Monthly and yearly compounded returns (percent) derived from snapshot
-    history using cash-flow-adjusted daily-linked returns."""
+    history using cash-flow-adjusted daily-linked returns.
+
+    The yearly row in this view should represent calendar years, so we
+    default ``from_date`` to the earliest available snapshot date rather
+    than inheriting ``pnl_timeseries``'s rolling-365d default.
+    """
+    if not from_date:
+        dates = await db.get_snapshot_dates()
+        from_date = dates[0] if dates else "2000-01-01"
     ts = await pnl_timeseries(from_date, to_date)
     monthly = finance.monthly_returns(ts["dates"], ts["returns"])
     return {"monthly": monthly, "yearly": finance.year_returns_from_months(monthly)}

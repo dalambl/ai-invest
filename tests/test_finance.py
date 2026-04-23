@@ -8,6 +8,7 @@ from datetime import date, timedelta
 import pytest
 
 from finance import (
+    FX_ROW,
     REALIZED_ROW,
     aggregate_snapshot_timeseries,
     daily_linked_returns,
@@ -93,6 +94,75 @@ def test_aggregate_excludes_realized_row_from_value_and_cost():
     assert out["2024-01-01"]["cost"] == 90.0
     assert out["2024-01-01"]["pnl"] == 60.0
     assert out["2024-01-01"]["total_return"] == 60.0
+
+
+def test_aggregate_uses_usd_fields_when_present():
+    # EUR position: market_value=1000 EUR, market_value_usd=1100; should
+    # aggregate the USD value, not the EUR.
+    rows = [
+        {
+            "date": "2025-06-01",
+            "symbol": "RHM",
+            "market_value": 1000.0,
+            "cost_basis": 900.0,
+            "day_pnl": 100.0,
+            "market_value_usd": 1100.0,
+            "cost_basis_usd": 950.0,
+            "stock_pnl_usd": 110.0,
+            "fx_pnl_usd": 40.0,
+            "dividends_cumulative": 0,
+            "total_return": 150.0,
+            "currency": "EUR",
+        },
+        {
+            "date": "2025-06-01",
+            "symbol": "AAA",
+            "market_value": 200.0,
+            "cost_basis": 180.0,
+            "day_pnl": 20.0,
+            "market_value_usd": 200.0,
+            "cost_basis_usd": 180.0,
+            "stock_pnl_usd": 20.0,
+            "fx_pnl_usd": 0.0,
+            "dividends_cumulative": 0,
+            "total_return": 20.0,
+            "currency": "USD",
+        },
+    ]
+    out = aggregate_snapshot_timeseries(rows)
+    assert out["2025-06-01"]["value"] == 1300.0
+    assert out["2025-06-01"]["cost"] == 1130.0
+    assert out["2025-06-01"]["stock_pnl"] == 130.0
+    assert out["2025-06-01"]["fx_pnl"] == 40.0
+    assert out["2025-06-01"]["pnl"] == 170.0
+
+
+def test_aggregate_excludes_fx_row_from_value_and_cost():
+    rows = [
+        {
+            "date": "2025-12-31",
+            "symbol": "AAA",
+            "market_value": 100.0,
+            "day_pnl": 10.0,
+            "cost_basis": 90.0,
+            "dividends_cumulative": 0,
+            "total_return": 10.0,
+        },
+        {
+            "date": "2025-12-31",
+            "symbol": FX_ROW,
+            "market_value": 0.0,
+            "day_pnl": 134.5,
+            "cost_basis": 0.0,
+            "dividends_cumulative": 0,
+            "total_return": 134.5,
+        },
+    ]
+    out = aggregate_snapshot_timeseries(rows)
+    assert out["2025-12-31"]["value"] == 100.0
+    assert out["2025-12-31"]["cost"] == 90.0
+    assert out["2025-12-31"]["pnl"] == 144.5
+    assert out["2025-12-31"]["total_return"] == 144.5
 
 
 # --- daily_linked_returns --------------------------------------------------

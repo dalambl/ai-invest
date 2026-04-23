@@ -8,6 +8,8 @@ create tests, fix what isn't working" on the portfolio-tracking code.
 Corresponding plan file (approved, still authoritative):
 `/home/david/.claude/plans/goofy-sprouting-charm.md`.
 
+*Summarized 2026-04-22 by Claude Opus 4.6 (`claude-opus-4-7`).*
+
 ## What has been done
 
 ### Bugs fixed

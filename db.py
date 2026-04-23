@@ -63,6 +63,22 @@ async def init_db():
     for col in ["dividends_cumulative", "total_return"]:
         with contextlib.suppress(Exception):
             await db.execute(f"ALTER TABLE snapshots ADD COLUMN {col} REAL DEFAULT 0")
+    for col, default in [("sec_type", "TEXT DEFAULT 'STK'"), ("multiplier", "REAL DEFAULT 1")]:
+        with contextlib.suppress(Exception):
+            await db.execute(f"ALTER TABLE snapshots ADD COLUMN {col} {default}")
+    # Multi-currency: per-row FX-aware fields. Older rows default to USD/1.0
+    # so foreign positions written before the schema bump end up reported in
+    # local currency until a rebuild populates these.
+    for col, default in [
+        ("currency", "TEXT DEFAULT 'USD'"),
+        ("fx_rate", "REAL DEFAULT 1.0"),
+        ("market_value_usd", "REAL"),
+        ("cost_basis_usd", "REAL"),
+        ("stock_pnl_usd", "REAL"),
+        ("fx_pnl_usd", "REAL"),
+    ]:
+        with contextlib.suppress(Exception):
+            await db.execute(f"ALTER TABLE snapshots ADD COLUMN {col} {default}")
     await db.commit()
     await db.close()
 
@@ -77,8 +93,11 @@ async def import_csv_snapshots():
             for row in reader:
                 await db.execute(
                     """
-                    INSERT OR IGNORE INTO snapshots (date, symbol, quantity, market_price, market_value, day_pnl, cost_basis)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO snapshots (date, symbol, quantity, market_price,
+                        market_value, day_pnl, cost_basis, dividends_cumulative, total_return,
+                        sec_type, multiplier, currency, fx_rate, market_value_usd,
+                        cost_basis_usd, stock_pnl_usd, fx_pnl_usd)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         row["date"],
@@ -88,6 +107,16 @@ async def import_csv_snapshots():
                         float(row["market_value"]),
                         float(row["day_pnl"]),
                         float(row["cost_basis"]),
+                        float(row.get("dividends_cumulative") or 0),
+                        float(row.get("total_return") or 0),
+                        row.get("sec_type") or "STK",
+                        float(row.get("multiplier") or 1),
+                        row.get("currency") or "USD",
+                        float(row.get("fx_rate") or 1.0),
+                        float(row["market_value_usd"]) if row.get("market_value_usd") else None,
+                        float(row["cost_basis_usd"]) if row.get("cost_basis_usd") else None,
+                        float(row["stock_pnl_usd"]) if row.get("stock_pnl_usd") else None,
+                        float(row["fx_pnl_usd"]) if row.get("fx_pnl_usd") else None,
                     ),
                 )
     await db.commit()
@@ -157,14 +186,38 @@ async def insert_trades(trades: list[dict]):
     await db.close()
 
 
+SNAPSHOT_FIELDS = [
+    "date",
+    "symbol",
+    "quantity",
+    "market_price",
+    "market_value",
+    "day_pnl",
+    "cost_basis",
+    "dividends_cumulative",
+    "total_return",
+    "sec_type",
+    "multiplier",
+    "currency",
+    "fx_rate",
+    "market_value_usd",
+    "cost_basis_usd",
+    "stock_pnl_usd",
+    "fx_pnl_usd",
+]
+
+_SNAPSHOT_DEFAULTS = {"sec_type": "STK", "multiplier": 1, "currency": "USD", "fx_rate": 1.0}
+
+
 async def save_snapshot(snapshot_date: str, rows: list[dict]):
     db = await get_db()
     for r in rows:
         await db.execute(
             """
             INSERT OR REPLACE INTO snapshots (date, symbol, quantity, market_price, market_value,
-                day_pnl, cost_basis, dividends_cumulative, total_return)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                day_pnl, cost_basis, dividends_cumulative, total_return, sec_type, multiplier,
+                currency, fx_rate, market_value_usd, cost_basis_usd, stock_pnl_usd, fx_pnl_usd)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 snapshot_date,
@@ -176,30 +229,30 @@ async def save_snapshot(snapshot_date: str, rows: list[dict]):
                 r["cost_basis"],
                 r.get("dividends_cumulative", 0),
                 r.get("total_return", 0),
+                r.get("sec_type", "STK"),
+                r.get("multiplier", 1),
+                r.get("currency", "USD"),
+                r.get("fx_rate", 1.0),
+                r.get("market_value_usd"),
+                r.get("cost_basis_usd"),
+                r.get("stock_pnl_usd"),
+                r.get("fx_pnl_usd"),
             ),
         )
     await db.commit()
     await db.close()
     csv_path = SNAPSHOTS_DIR / f"{snapshot_date}.csv"
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "date",
-        "symbol",
-        "quantity",
-        "market_price",
-        "market_value",
-        "day_pnl",
-        "cost_basis",
-        "dividends_cumulative",
-        "total_return",
-    ]
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=SNAPSHOT_FIELDS)
         writer.writeheader()
         for r in rows:
-            writer.writerow(
-                {"date": snapshot_date, **{k: r.get(k, 0) for k in fieldnames if k != "date"}}
-            )
+            row = {"date": snapshot_date}
+            for k in SNAPSHOT_FIELDS:
+                if k == "date":
+                    continue
+                row[k] = r.get(k, _SNAPSHOT_DEFAULTS.get(k, 0))
+            writer.writerow(row)
 
 
 async def insert_dividends(dividends: list[dict]):

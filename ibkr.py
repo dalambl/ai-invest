@@ -11,6 +11,41 @@ def _is_real(x) -> bool:
     return x is not None and not math.isnan(x)
 
 
+_MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+
+
+def _human_symbol(c) -> str:
+    """Build a readable symbol from an ib_insync ``Contract``.
+
+    For options/futures we want a stable, human-readable identifier rather
+    than the underlier alone (which collides across contracts) or the OCC
+    string (which is unreadable).
+    Examples:
+      - Stock      "AAPL"            -> "AAPL"
+      - OPT        symbol=NVDA, lastTradeDateOrContractMonth=20271217,
+                   strike=110, right=P -> "NVDA 17DEC27 110 P"
+      - FUT        symbol=M6E, lastTradeDateOrContractMonth=20260615 -> "M6E 15JUN26"
+    """
+    sec = getattr(c, "secType", "STK")
+    if sec == "STK":
+        return c.symbol
+    expiry = getattr(c, "lastTradeDateOrContractMonth", "") or ""
+    if len(expiry) >= 8:
+        y, m, d = expiry[:4], expiry[4:6], expiry[6:8]
+        try:
+            mon = _MONTH_ABBR[int(m) - 1]
+            tail = f"{int(d):02d}{mon}{y[2:]}"
+        except (ValueError, IndexError):
+            tail = expiry
+    else:
+        tail = expiry
+    if sec == "OPT":
+        right = getattr(c, "right", "") or ""
+        strike = getattr(c, "strike", 0) or 0
+        return f"{c.symbol} {tail} {strike:g} {right}".strip()
+    return f"{c.symbol} {tail}".strip()
+
+
 log = logging.getLogger(__name__)
 
 _ib_available = True
@@ -150,25 +185,17 @@ class IBConnection:
         if not has_live_price:
             price = avg_cost / multiplier if multiplier > 1 else avg_cost
 
-        mv = (
-            live_mv
-            if (live_mv and _is_real(live_mv) and live_mv != 0)
-            else round(qty * price * multiplier, 2)
-        )
+        # IB's portfolio() returns marketValue/unrealizedPNL in the account
+        # base currency (USD here), not the contract's local currency. Our
+        # downstream pipeline assumes market_value/unrealized_pnl are in the
+        # contract's local currency, so always compute locally from
+        # qty × price (price comes from item.marketPrice, which is local).
+        mv = round(qty * price * multiplier, 2)
         cost = qty * avg_cost
-        computed_upnl = round(mv - cost, 2)
+        upnl = round(mv - cost, 2)
 
-        # Prefer live_upnl only if it's a real value (not NaN and not a suspicious 0
-        # when price differs from avg_cost)
-        if _is_real(live_upnl) and live_upnl != 0:
-            upnl = live_upnl
-        elif has_live_price:
-            upnl = computed_upnl
-        elif _is_real(live_upnl):
-            upnl = live_upnl  # IB explicitly says 0
-        else:
-            upnl = computed_upnl
-
+        _ = live_mv  # IB-base-currency value, ignored — see comment above
+        _ = live_upnl
         rpnl = live_rpnl if _is_real(live_rpnl) else 0.0
         return {
             "timestamp": datetime.now().isoformat(),
@@ -264,7 +291,7 @@ class IBConnection:
             result.append(
                 {
                     "trade_date": str(ex.time),
-                    "symbol": c.symbol,
+                    "symbol": _human_symbol(c),
                     "description": c.localSymbol or c.symbol,
                     "asset_class": c.secType,
                     "action": "BUY" if ex.side == "BOT" else "SELL",
