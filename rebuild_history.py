@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).parent / "data"
 DB_PATH = DATA_DIR / "trading.db"
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
-CSV_PATH = DATA_DIR / "U640574.TRANSACTIONS.20221230.20260306.csv"
+CSV_GLOB = "U640574.TRANSACTIONS*.csv"
 
 SYMBOL_MAP = {
     "BIPC.OLD": "BIPC",
@@ -845,10 +845,44 @@ def update_positions_from_csv(dividend_snapshots, purchase_dates, avg_costs):
     log.info(f"Updated {updated} positions with purchase dates, costs, and dividends")
 
 
+def _dedupe_transactions(txs):
+    """Drop exact-duplicate rows across overlapping statements.
+
+    Key: (date, symbol, type, qty, price, net). Rounded to squash tiny
+    floating-point drift between re-exports of the same trade.
+    """
+    seen = set()
+    out = []
+    for t in txs:
+        k = (
+            t["date"],
+            t["symbol"],
+            t["type"],
+            round(t["quantity"], 4),
+            round(t["price"], 4),
+            round(t["net"], 2),
+        )
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t)
+    return out
+
+
 def main():
     log.info("Parsing transactions...")
-    transactions = parse_transactions(CSV_PATH)
-    log.info(f"Found {len(transactions)} transactions")
+    csv_paths = sorted(DATA_DIR.glob(CSV_GLOB))
+    if not csv_paths:
+        raise FileNotFoundError(f"No transaction CSVs matched {DATA_DIR / CSV_GLOB}")
+    raw = []
+    for p in csv_paths:
+        rows = parse_transactions(p)
+        log.info(f"  {p.name}: {len(rows)} rows")
+        raw.extend(rows)
+    transactions = _dedupe_transactions(raw)
+    transactions.sort(key=lambda t: t["date"])
+    dropped = len(raw) - len(transactions)
+    log.info(f"Found {len(transactions)} transactions ({dropped} duplicates dropped)")
 
     buys = [t for t in transactions if t["type"] == "Buy"]
     sells = [t for t in transactions if t["type"] == "Sell"]

@@ -58,6 +58,17 @@ $80,671.35, FX P&L $826.12, Dividends $8,837.47, Total Return
 $90,334.94. Year-end 2025 FX P/L still exact at +$134.59. Full check
 pipeline green (ruff/ty/pytest) at **54 passed**. No commits made.
 
+**2026-04-23** — Multi-CSV transaction loading (`notes/007`).
+`rebuild_history.py` now globs `data/U640574.TRANSACTIONS*.csv`
+instead of hard-coding one file, and deduplicates overlapping rows
+via `(date, symbol, type, qty, price, net)`. User added a YTD
+export so March-April trades (including the AIR buy on 2026-04-21)
+are now captured with their real purchase dates instead of being
+treated as pre-existing. Post-rebuild: MV $308,544, Total Return
+$113,525. AIR purchase_date now 2026-04-21. 54 tests pass. Still
+open: automated Flex Web Service exports so the CSV never goes
+stale (needs Flex Query ID + Token from IB).
+
 ## Plan
 - Implement industry mapping per `005-industry-mapping-plan.md` (start
   with Yahoo + manual-overrides layer, defer ETF expansion).
@@ -74,5 +85,6 @@ pipeline green (ruff/ty/pytest) at **54 passed**. No commits made.
 | [002](002-verify-and-fix.md) | Verify and fix | Audit findings (monthly-grid bugs, exposure alias, asyncio deprecation, multi-currency, tooling drift), fixes applied, new `finance.py` + 32 tests, full check pipeline green (ruff/pytest/ty), `python-multipart` added, `ibkr.py` ty errors cleared. |
 | [003](003-fix-options-cost-fx-trades.md) | Options, cost basis, FX, trades | Compared pipeline output to real IB Activity Statement; fixed: options keep full contract symbol with multiplier=100, cost basis commission-inclusive, new `ib_statement.py` parser + `__FX__` pseudo-row inject FX P/L, trade history shows option contracts. Schema migration: `sec_type` + `multiplier` columns. Rebuild executed: phantom OPT/FUT seed-positions filtered out, `data/U640574_2025_2025.csv` location standardized, year-end unrealized within $830 of IB, FX P/L exact. 19 new tests; 51 passing. |
 | [004](004-cost-basis-monthly-sharpe.md) | Cost-basis seeding, monthly tab, Sharpe Rf | Eliminated +24.71% 2023-09-12 phantom spike by pre-seeding cost basis for pre-existing positions at day-1 market price (two-pass build in `rebuild_history.main`, new `init_costs` arg on `build_daily_positions`); `generate_snapshots` no longer back-patches. `/api/returns/monthly` now defaults to earliest snapshot so yearly rows are calendar years. `finance.risk_metrics` accepts `risk_free_rate`. Post-rebuild yearlies: 2023 +17.7%, 2024 +9.9%, 2025 +28.7%, 2026 YTD +7.9%; Sharpe 0.91 at Rf=4.5%. 51 tests still passing. |
+| [007](007-multi-csv-dedup.md) | Multi-CSV loading + dedup | `rebuild_history.py` now globs `U640574.TRANSACTIONS*.csv` and deduplicates overlapping rows so YTD exports can be added alongside the full history without creating phantom trades. 34 duplicates dropped across the overlap. AIR now correctly purchased=2026-04-21 (was falsely showing 2023-01-31). Automated Flex Web Service re-export deferred pending credentials. |
 | [006](006-multicurrency-pnl-fixes.md) | Multi-currency P&L fixes | Three follow-up fixes after the initial multi-currency split: cost-basis local/USD separation in `build_daily_positions`, pre-existing-position seed derived from IB avg cost (average-cost invariance) instead of day-1 market price, and `/api/positions` exposes `unrealized_pnl_usd` so Stock + FX = Unreal in the dashboard. Then a second pass: `_enrich_position` (ibkr.py) now always uses local `qty × price` instead of IB's USD-base `marketValue`; `enrich_positions_from_db` derives `market_value_usd` fresh from `mv_local × fx_rate` (was reusing stale snapshot value); frontend uses `unrealized_pnl_usd` in the Unrealized column. AIR went from "-$1683 USD" (corrupted) to correct +$252 USD (small EUR loss + EUR-strengthening FX gain). All foreign holdings reconcile; 54 tests pass. |
 | [005](005-industry-mapping-plan.md) | Industry-mapping plan | Design for many-to-many stock→industry tagging: layered resolver (manual overrides → GICS-from-Wikipedia → Yahoo `info` → SEC SIC → ETF holdings expansion) with provenance, `industries`/`symbol_industries` SQLite tables (with weights for ETF expansion), and `/api/exposure/industry` endpoint. Open questions on canonical sector vs multi-tag, override CSV location, ETF expansion vs single thematic tag. Plan only — not implemented. |
