@@ -7,6 +7,25 @@ performance vs benchmark, exposure, and risk metrics.
 
 ## Current status
 
+**2026-04-23 (pm)** — Three dashboard upgrades (`notes/008`).
+(a) Sharpe Rf is now the FRED 3-month T-bill (DGS3MO), aligned per-day
+to each return observation instead of a hard-coded 4.5% constant.
+`finance.risk_metrics` / `sharpe_by_frequency` accept Rf as scalar OR
+`{date: rate}` mapping; `/api/risk` defaults to time-varying and
+returns `risk_free_rate: {source, kind, min, max, mean, first_date,
+last_date}`. Over 2023-01-31 to 2026-04-23, Rf ranged 3.62% to 5.63%
+(mean 4.78%); Sharpe daily / weekly / monthly = 0.86 / 0.89 / 1.04.
+(b) New `fred.py` generic series fetcher with per-id disk cache; new
+`GET /api/fred/{series_id}` endpoint; Performance tab has a free-text
+input + "+ Overlay" control above the Cumulative P&L chart that
+overlays any FRED series on a secondary y-axis (raw units), with
+removable chips that persist in localStorage.
+(c) Holdings table symbols are now clickable, opening a modal with a
+Plotly candlestick chart, period pills, dashed avg-cost reference
+line, and dividend markers. `/api/market/history/{symbol}` now falls
+back to Yahoo (`yfinance`) when TWS is offline. 56 tests pass;
+ruff/ty clean.
+
 **2026-04-22 (late pm)** — AIR follow-up: discovered the prior
 "override `market_value` to USD" approach corrupted the snapshot
 (today's `market_value` column got USD instead of EUR, and the next
@@ -74,8 +93,6 @@ automated Flex fetcher wanted.
   with Yahoo + manual-overrides layer, defer ETF expansion).
 - Read and document the frontend (`static/`) in its own notes file.
 - Design pass for cash-balance tracking in snapshots.
-- Restart the running uvicorn so `/api/risk` serves the new
-  `sharpe_by_frequency` field (current process loaded pre-change code).
 
 ## Notes index
 
@@ -87,4 +104,5 @@ automated Flex fetcher wanted.
 | [004](004-cost-basis-monthly-sharpe.md) | Cost-basis seeding, monthly tab, Sharpe Rf | Eliminated +24.71% 2023-09-12 phantom spike by pre-seeding cost basis for pre-existing positions at day-1 market price (two-pass build in `rebuild_history.main`, new `init_costs` arg on `build_daily_positions`); `generate_snapshots` no longer back-patches. `/api/returns/monthly` now defaults to earliest snapshot so yearly rows are calendar years. `finance.risk_metrics` accepts `risk_free_rate`. Post-rebuild yearlies: 2023 +17.7%, 2024 +9.9%, 2025 +28.7%, 2026 YTD +7.9%; Sharpe 0.91 at Rf=4.5%. 51 tests still passing. |
 | [007](007-multi-csv-dedup.md) | Multi-CSV loading + dedup | `rebuild_history.py` now globs `U640574.TRANSACTIONS*.csv` and deduplicates overlapping rows so YTD exports can be added alongside the full history without creating phantom trades. 34 duplicates dropped across the overlap. AIR now correctly purchased=2026-04-21 (was falsely showing 2023-01-31). Automated Flex Web Service re-export deferred pending credentials. |
 | [006](006-multicurrency-pnl-fixes.md) | Multi-currency P&L fixes | Three follow-up fixes after the initial multi-currency split: cost-basis local/USD separation in `build_daily_positions`, pre-existing-position seed derived from IB avg cost (average-cost invariance) instead of day-1 market price, and `/api/positions` exposes `unrealized_pnl_usd` so Stock + FX = Unreal in the dashboard. Then a second pass: `_enrich_position` (ibkr.py) now always uses local `qty × price` instead of IB's USD-base `marketValue`; `enrich_positions_from_db` derives `market_value_usd` fresh from `mv_local × fx_rate` (was reusing stale snapshot value); frontend uses `unrealized_pnl_usd` in the Unrealized column. AIR went from "-$1683 USD" (corrupted) to correct +$252 USD (small EUR loss + EUR-strengthening FX gain). All foreign holdings reconcile; 54 tests pass. |
+| [008](008-fred-rf-and-overlays.md) | FRED Rf + overlays + stock modal | Sharpe Rf switched from constant 0.045 to per-day FRED DGS3MO; `finance` accepts scalar or `{date: rate}` Rf; `/api/risk` reports Rf range. New `fred.py` generic FRED fetcher (per-id disk cache, no API key) + `/api/fred/{series_id}`; Performance tab gets a free-text overlay control that adds any FRED series to the P&L chart on a secondary axis. Holdings symbols clickable → modal with Plotly candlestick chart (period pills, avg-cost reference line, dividend markers); `/api/market/history` Yahoo fallback when TWS offline. 56 tests pass. |
 | [005](005-industry-mapping-plan.md) | Industry-mapping plan | Design for many-to-many stock→industry tagging: layered resolver (manual overrides → GICS-from-Wikipedia → Yahoo `info` → SEC SIC → ETF holdings expansion) with provenance, `industries`/`symbol_industries` SQLite tables (with weights for ETF expansion), and `/api/exposure/industry` endpoint. Open questions on canonical sector vs multi-tag, override CSV location, ETF expansion vs single thematic tag. Plan only — not implemented. |

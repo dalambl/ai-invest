@@ -10,6 +10,11 @@ let state = {
     sortCol: 'market_value',
     sortAsc: false,
     theme: localStorage.getItem('theme') || 'dark',
+    fredOverlays: JSON.parse(localStorage.getItem('fredOverlays') || '[]'),
+    fredCache: {},
+    perfData: null,
+    modalSymbol: null,
+    modalHorizon: '1y',
 };
 
 // --- Init ---
@@ -147,7 +152,7 @@ function renderHoldings() {
         const stockPnl = r.stock_pnl_usd != null ? r.stock_pnl_usd : null;
         const fxPnl = r.fx_pnl_usd != null ? r.fx_pnl_usd : null;
         html += `<tr>
-            <td><strong>${r.symbol}</strong></td>
+            <td><strong onclick="openSymbolModal('${r.symbol}', ${r.avg_cost || 0})">${r.symbol}</strong></td>
             <td>${r.sec_type || ''}</td>
             <td>${r.purchase_date || ''}</td>
             <td class="num">${fmtN(r.quantity)}</td>
@@ -208,10 +213,12 @@ async function loadPerformance() {
     try {
         const res = await fetch(`${API}/api/pnl/timeseries?from_date=${fromDate}&to_date=${toDate}`);
         const data = await res.json();
+        state.perfData = data;
         renderCumulativePnlChart(data);
         renderPerfDrawdownChart(data);
         renderPerfChart({ portfolio: data });
         renderValueChart({ portfolio: data });
+        reloadFredOverlays();
     } catch { }
 
     try {
@@ -242,7 +249,85 @@ function renderCumulativePnlChart(data) {
             line: { color: getCSS('--accent'), width: 2, dash: 'dot' }
         });
     }
-    Plotly.newPlot('pnl-chart', traces, chartLayout('P&L ($)', true), { responsive: true, displayModeBar: false });
+    const layout = chartLayout('P&L ($)', true);
+    state.fredOverlays.forEach((sid, i) => {
+        const series = state.fredCache[sid];
+        if (!series || !series.dates.length) return;
+        const axisName = i === 0 ? 'y2' : 'y' + (2 + i);
+        traces.push({
+            x: series.dates, y: series.values, name: sid,
+            yaxis: axisName,
+            line: { color: getCSS('--accent2') || '#bc8cff', width: 1.2, dash: 'dot' },
+            opacity: 0.85,
+        });
+        layout[i === 0 ? 'yaxis2' : 'yaxis' + (2 + i)] = {
+            color: getCSS('--text2'), overlaying: 'y',
+            side: i % 2 === 0 ? 'right' : 'left',
+            position: i < 2 ? undefined : (i % 2 === 0 ? 1 - 0.04 * Math.floor(i/2) : 0.04 * Math.floor(i/2)),
+            title: sid, showgrid: false,
+        };
+    });
+    if (state.fredOverlays.length) {
+        layout.xaxis = { ...(layout.xaxis || {}), domain: [0, 1] };
+    }
+    Plotly.newPlot('pnl-chart', traces, layout, { responsive: true, displayModeBar: false });
+    renderFredChips();
+}
+
+function renderFredChips() {
+    const el = document.getElementById('fred-overlay-chips');
+    if (!el) return;
+    el.innerHTML = state.fredOverlays.map(sid =>
+        `<span class="fred-chip">${sid}<button onclick="removeFredOverlay('${sid}')" title="Remove">x</button></span>`
+    ).join('');
+}
+
+async function addFredOverlay() {
+    const input = document.getElementById('fred-overlay-input');
+    const sid = (input.value || '').trim().toUpperCase();
+    if (!sid) return;
+    if (state.fredOverlays.includes(sid)) { input.value = ''; return; }
+    const from = state.perfData?.dates?.[0];
+    const to = state.perfData?.dates?.[state.perfData.dates.length - 1];
+    let url = `${API}/api/fred/${encodeURIComponent(sid)}`;
+    if (from && to) url += `?from_date=${from}&to_date=${to}`;
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.error || !data.dates?.length) {
+            alert(`FRED series ${sid}: ${data.error || 'no data in range'}`);
+            return;
+        }
+        state.fredCache[sid] = data;
+        state.fredOverlays.push(sid);
+        localStorage.setItem('fredOverlays', JSON.stringify(state.fredOverlays));
+        input.value = '';
+        if (state.perfData) renderCumulativePnlChart(state.perfData);
+    } catch (e) {
+        alert('FRED fetch failed: ' + e);
+    }
+}
+
+function removeFredOverlay(sid) {
+    state.fredOverlays = state.fredOverlays.filter(s => s !== sid);
+    delete state.fredCache[sid];
+    localStorage.setItem('fredOverlays', JSON.stringify(state.fredOverlays));
+    if (state.perfData) renderCumulativePnlChart(state.perfData);
+}
+
+async function reloadFredOverlays() {
+    if (!state.perfData?.dates?.length) return;
+    const from = state.perfData.dates[0];
+    const to = state.perfData.dates[state.perfData.dates.length - 1];
+    for (const sid of [...state.fredOverlays]) {
+        if (state.fredCache[sid]) continue;
+        try {
+            const res = await fetch(`${API}/api/fred/${encodeURIComponent(sid)}?from_date=${from}&to_date=${to}`);
+            const data = await res.json();
+            if (data.dates?.length) state.fredCache[sid] = data;
+        } catch { }
+    }
+    renderCumulativePnlChart(state.perfData);
 }
 
 function renderPerfDrawdownChart(data) {
@@ -572,6 +657,92 @@ async function loadSymbolChart() {
     } catch { }
 }
 
+// --- Symbol Modal ---
+function openSymbolModal(symbol, avgCost) {
+    state.modalSymbol = symbol;
+    state.modalAvgCost = avgCost || 0;
+    document.getElementById('modal-symbol').textContent = symbol;
+    document.getElementById('symbol-modal').classList.add('active');
+    loadModalChart();
+}
+
+function closeSymbolModal() {
+    document.getElementById('symbol-modal').classList.remove('active');
+    state.modalSymbol = null;
+}
+
+async function loadModalChart() {
+    const sym = state.modalSymbol;
+    if (!sym) return;
+    const period = state.modalHorizon;
+    const meta = document.getElementById('modal-meta');
+    meta.textContent = `period: ${period.toUpperCase()}  ·  loading…`;
+    let bars = [];
+    try {
+        const res = await fetch(`${API}/api/market/history/${encodeURIComponent(sym)}?period=${period}`);
+        bars = await res.json();
+    } catch { }
+    if (!bars?.length) {
+        Plotly.newPlot('modal-chart', [], { ...baseLayout(), annotations: [{
+            text: 'No price data', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false,
+            font: { color: getCSS('--text2'), size: 14 }
+        }] }, { responsive: true, displayModeBar: false });
+        meta.textContent = `period: ${period.toUpperCase()}  ·  no data`;
+        return;
+    }
+    let dividends = [];
+    try {
+        const dres = await fetch(`${API}/api/dividends?symbol=${encodeURIComponent(sym)}&from_date=${bars[0].date}&to_date=${bars[bars.length - 1].date}`);
+        dividends = await dres.json();
+    } catch { }
+
+    const dates = bars.map(b => b.date);
+    const closes = bars.map(b => b.close);
+    const traces = [{
+        x: dates, open: bars.map(b => b.open), high: bars.map(b => b.high),
+        low: bars.map(b => b.low), close: closes, type: 'candlestick', name: sym,
+        increasing: { line: { color: getCSS('--green') } },
+        decreasing: { line: { color: getCSS('--red') } },
+    }];
+    const shapes = [];
+    if (state.modalAvgCost && state.modalAvgCost > 0) {
+        shapes.push({
+            type: 'line', xref: 'paper', x0: 0, x1: 1,
+            y0: state.modalAvgCost, y1: state.modalAvgCost,
+            line: { color: getCSS('--accent'), width: 1, dash: 'dash' },
+        });
+    }
+    if (dividends?.length) {
+        const inRange = dividends.filter(d => d.date >= dates[0] && d.date <= dates[dates.length - 1]);
+        const lo = Math.min(...bars.map(b => b.low));
+        traces.push({
+            x: inRange.map(d => d.date),
+            y: inRange.map(() => lo),
+            mode: 'markers',
+            type: 'scatter',
+            marker: { symbol: 'triangle-up', size: 10, color: getCSS('--green') },
+            name: 'Dividend',
+            text: inRange.map(d => `Div ${fmt(d.amount)}`),
+            hoverinfo: 'text+x',
+        });
+    }
+    const lastClose = closes[closes.length - 1];
+    const firstClose = closes[0];
+    const pct = firstClose ? ((lastClose / firstClose - 1) * 100).toFixed(2) : '0';
+    const avgCostNote = state.modalAvgCost > 0 ? `  ·  avg cost ${fmtP(state.modalAvgCost)}` : '';
+    meta.textContent = `period: ${period.toUpperCase()}  ·  ${dates[0]} → ${dates[dates.length - 1]}  ·  ${pct}%${avgCostNote}`;
+
+    const layout = {
+        ...baseLayout(),
+        xaxis: { color: getCSS('--text2'), rangeslider: { visible: false }, gridcolor: getCSS('--border'), showgrid: false },
+        yaxis: { color: getCSS('--text2'), gridcolor: getCSS('--border'), title: 'Price' },
+        shapes,
+        showlegend: dividends?.length > 0,
+        legend: { x: 0, y: 1.1, orientation: 'h', font: { size: 11 } },
+    };
+    Plotly.newPlot('modal-chart', traces, layout, { responsive: true, displayModeBar: false });
+}
+
 // --- Horizon bars ---
 function setupHorizonBars() {
     document.getElementById('holdings-horizon').addEventListener('click', e => {
@@ -593,6 +764,19 @@ function setupHorizonBars() {
         e.target.classList.add('active');
         state.chartHorizon = e.target.dataset.h;
         loadSymbolChart();
+    });
+    const mh = document.getElementById('modal-horizon');
+    if (mh) mh.addEventListener('click', e => {
+        if (!e.target.classList.contains('horizon-pill')) return;
+        document.querySelectorAll('#modal-horizon .horizon-pill').forEach(p => p.classList.remove('active'));
+        e.target.classList.add('active');
+        state.modalHorizon = e.target.dataset.h;
+        loadModalChart();
+    });
+    const sm = document.getElementById('symbol-modal');
+    if (sm) sm.addEventListener('click', e => { if (e.target === sm) closeSymbolModal(); });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') closeSymbolModal();
     });
 }
 

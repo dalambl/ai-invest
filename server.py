@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 
 import db
 import finance
+import fred
+import risk_free
 from ibkr import ib_conn
 
 logging.basicConfig(level=logging.INFO)
@@ -540,23 +542,41 @@ async def exposure_currency():
 
 
 @app.get("/api/risk")
-async def risk(risk_free_rate: float = 0.045, from_date: str | None = None):
+async def risk(risk_free_rate: float | None = None, from_date: str | None = None):
     """Risk metrics with annualized Sharpe at three sampling frequencies.
 
     Defaults to the earliest snapshot date so risk is computed over the
     full history (matches the monthly tab's calendar-year semantics).
-    Default Rf=4.5% reflects T-bill cash yield over the sample period;
-    override via query param.
-    """
+
+    Risk-free rate defaults to the FRED 3-Month Treasury Constant
+    Maturity series (DGS3MO), aligned per-day to each return observation.
+    Pass ``risk_free_rate`` (annualized decimal, e.g. 0.045) to override
+    with a constant rate."""
     if not from_date:
         snap_dates = await db.get_snapshot_dates()
         from_date = snap_dates[0] if snap_dates else "2000-01-01"
     ts = await pnl_timeseries(from_date=from_date)
-    base = finance.risk_metrics(ts["values"], ts["pnl"], risk_free_rate=risk_free_rate)
+    if risk_free_rate is None:
+        rf_series = risk_free.load_dgs3mo(end_date=ts["dates"][-1] if ts["dates"] else None)
+        rf_arg: float | dict[str, float] = rf_series
+        in_window = [rf_series[d] for d in ts["dates"] if d in rf_series]
+        rf_meta = {
+            "source": "FRED:DGS3MO",
+            "kind": "time-varying",
+            "min": round(min(in_window), 6) if in_window else None,
+            "max": round(max(in_window), 6) if in_window else None,
+            "mean": round(sum(in_window) / len(in_window), 6) if in_window else None,
+            "first_date": ts["dates"][0] if ts["dates"] else None,
+            "last_date": ts["dates"][-1] if ts["dates"] else None,
+        }
+    else:
+        rf_arg = risk_free_rate
+        rf_meta = {"source": "user-override", "kind": "constant", "value": risk_free_rate}
+    base = finance.risk_metrics(ts["values"], ts["pnl"], risk_free_rate=rf_arg, dates=ts["dates"])
     sharpes = finance.sharpe_by_frequency(
-        ts["dates"], ts["values"], ts["pnl"], risk_free_rate=risk_free_rate
+        ts["dates"], ts["values"], ts["pnl"], risk_free_rate=rf_arg
     )
-    return {**base, "sharpe_by_frequency": sharpes, "risk_free_rate": risk_free_rate}
+    return {**base, "sharpe_by_frequency": sharpes, "risk_free_rate": rf_meta}
 
 
 @app.get("/api/returns/monthly")
@@ -583,6 +603,38 @@ async def market_quote(symbol: str):
     return {"symbol": symbol.upper(), "error": "TWS not connected"}
 
 
+def _yahoo_history(symbol: str, period: str) -> list[dict]:
+    """Fallback when TWS is offline. Maps period→yfinance period string and
+    returns OHLC rows in the same shape as ``ib_conn.get_historical_data``."""
+    import yfinance as yf  # noqa: PLC0415 — optional dep, lazy import
+
+    yperiod_map = {
+        "1d": "5d",
+        "5d": "5d",
+        "1m": "1mo",
+        "3m": "3mo",
+        "6m": "6mo",
+        "1y": "1y",
+        "3y": "3y",
+        "5y": "5y",
+    }
+    yticker = YAHOO_TICKER_MAP.get(symbol.upper(), symbol.upper())
+    df = yf.Ticker(yticker).history(period=yperiod_map.get(period, "1y"), auto_adjust=False)
+    if df.empty:
+        return []
+    return [
+        {
+            "date": dt.strftime("%Y-%m-%d"),
+            "open": round(float(row["Open"]), 4),
+            "high": round(float(row["High"]), 4),
+            "low": round(float(row["Low"]), 4),
+            "close": round(float(row["Close"]), 4),
+            "volume": int(row["Volume"]) if row["Volume"] == row["Volume"] else 0,
+        }
+        for dt, row in df.iterrows()
+    ]
+
+
 @app.get("/api/market/history/{symbol}")
 async def market_history(symbol: str, period: str = "1y", bar: str = "1 day"):
     duration_map = {
@@ -597,8 +649,37 @@ async def market_history(symbol: str, period: str = "1y", bar: str = "1 day"):
     }
     duration = duration_map.get(period, "1 Y")
     if ib_conn.connected:
-        return ib_conn.get_historical_data(symbol.upper(), duration=duration, bar_size=bar)
-    return []
+        rows = ib_conn.get_historical_data(symbol.upper(), duration=duration, bar_size=bar)
+        if rows:
+            return rows
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _yahoo_history, symbol, period)
+    except Exception as e:
+        log.warning(f"Yahoo history fallback failed for {symbol}: {e}")
+        return []
+
+
+@app.get("/api/fred/{series_id}")
+async def fred_series(series_id: str, from_date: str | None = None, to_date: str | None = None):
+    """Fetch a FRED time series. Values are FRED's raw units (e.g. percent
+    for DGS3MO/DGS10, level for VIXCLS/CPIAUCSL). The on-disk cache is
+    refreshed at most once per day."""
+    loop = asyncio.get_running_loop()
+    try:
+        raw = await loop.run_in_executor(None, fred.fetch_series, series_id)
+    except Exception as e:
+        return {"series_id": series_id.upper(), "error": str(e), "dates": [], "values": []}
+    items = sorted(raw.items())
+    if from_date:
+        items = [(d, v) for d, v in items if d >= from_date]
+    if to_date:
+        items = [(d, v) for d, v in items if d <= to_date]
+    return {
+        "series_id": series_id.upper(),
+        "dates": [d for d, _ in items],
+        "values": [v for _, v in items],
+    }
 
 
 @app.get("/api/market/movers")

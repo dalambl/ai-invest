@@ -238,6 +238,30 @@ def test_risk_metrics_short_series():
     }
 
 
+def test_risk_metrics_time_varying_rf_matches_scalar_when_constant():
+    # 5 daily values; same Rf passed scalar vs per-date dict should yield same Sharpe.
+    dates = ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"]
+    values = [100.0, 101.0, 100.5, 102.0, 103.0]
+    pnl = [0.0, 1.0, 0.5, 2.0, 3.0]
+    rf_const = 0.045
+    rf_dict = dict.fromkeys(dates, 0.045)
+    m_scalar = risk_metrics(values, pnl, risk_free_rate=rf_const)
+    m_dict = risk_metrics(values, pnl, risk_free_rate=rf_dict, dates=dates)
+    assert m_scalar["sharpe"] == m_dict["sharpe"]
+
+
+def test_risk_metrics_time_varying_rf_responds_to_changes():
+    # Higher Rf → lower Sharpe.
+    dates = ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08"]
+    values = [100.0, 101.0, 100.5, 102.0, 103.0]
+    pnl = [0.0, 1.0, 0.5, 2.0, 3.0]
+    low_rf = dict.fromkeys(dates, 0.01)
+    high_rf = dict.fromkeys(dates, 0.10)
+    s_low = risk_metrics(values, pnl, risk_free_rate=low_rf, dates=dates)["sharpe"]
+    s_high = risk_metrics(values, pnl, risk_free_rate=high_rf, dates=dates)["sharpe"]
+    assert s_low > s_high
+
+
 def test_risk_metrics_constant_return():
     # Every day: +1% on previous value. Values compound; so does P&L.
     values = [100.0]

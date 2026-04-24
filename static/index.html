@@ -97,7 +97,16 @@
                 <button class="horizon-pill" data-h="all">ALL</button>
             </div>
             <div class="card">
-                <div class="card-title">Cumulative P&L ($)</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+                    <div class="card-title" style="margin-bottom:0">Cumulative P&L ($)</div>
+                    <div style="display:flex;gap:6px;align-items:center">
+                        <input type="text" id="fred-overlay-input" placeholder="FRED series (e.g. DGS10)"
+                            style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:var(--radius);font-family:var(--mono);width:200px;text-transform:uppercase"
+                            onkeydown="if(event.key==='Enter')addFredOverlay()">
+                        <button class="btn btn-secondary" onclick="addFredOverlay()">+ Overlay</button>
+                        <span id="fred-overlay-chips" style="display:flex;gap:4px;flex-wrap:wrap"></span>
+                    </div>
+                </div>
                 <div class="chart-container" id="pnl-chart"></div>
             </div>
             <div class="card">
@@ -273,6 +282,27 @@
     </div>
 </div>
 
+<div class="modal-overlay" id="symbol-modal">
+    <div class="modal-box">
+        <div class="modal-header">
+            <div><span id="modal-symbol"></span><span id="modal-meta"></span></div>
+            <div style="display:flex;gap:8px;align-items:center">
+                <div class="horizon-bar" id="modal-horizon" style="margin-bottom:0">
+                    <button class="horizon-pill" data-h="1m">1M</button>
+                    <button class="horizon-pill" data-h="3m">3M</button>
+                    <button class="horizon-pill" data-h="6m">6M</button>
+                    <button class="horizon-pill active" data-h="1y">1Y</button>
+                    <button class="horizon-pill" data-h="3y">3Y</button>
+                    <button class="horizon-pill" data-h="5y">5Y</button>
+                </div>
+                <button class="btn btn-secondary" onclick="closeSymbolModal()">Close</button>
+            </div>
+        </div>
+        <div class="chart-container" id="modal-chart"></div>
+    </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>
+

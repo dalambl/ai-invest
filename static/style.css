@@ -153,3 +153,15 @@ tr.summary-row td { font-weight: 700; border-top: 2px solid var(--border); backg
 /* Import dialog */
 .import-area { border: 2px dashed var(--border); border-radius: var(--radius); padding: 24px; text-align: center; color: var(--text2); cursor: pointer; }
 .import-area:hover { border-color: var(--accent); }
+
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 200; justify-content: center; align-items: center; padding: 40px; }
+.modal-overlay.active { display: flex; }
+.modal-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; width: min(1100px, 95vw); max-height: 90vh; padding: 16px 20px; box-shadow: 0 12px 48px rgba(0,0,0,0.5); display: flex; flex-direction: column; }
+.modal-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.modal-header #modal-symbol { font-weight: 700; font-size: 18px; }
+.modal-header #modal-meta { color: var(--text2); margin-left: 12px; font-size: 12px; }
+.modal-box .chart-container { flex: 1; height: 60vh; min-height: 400px; }
+#holdings-table tbody tr td:first-child strong { cursor: pointer; }
+#holdings-table tbody tr td:first-child strong:hover { text-decoration: underline; color: var(--accent); }
+.fred-chip { background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 2px 8px; font-size: 11px; font-family: var(--mono); display: inline-flex; gap: 6px; align-items: center; }
+.fred-chip button { background: none; border: none; color: var(--text2); cursor: pointer; padding: 0; font-size: 14px; line-height: 1; }

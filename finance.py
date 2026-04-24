@@ -119,20 +119,51 @@ def max_drawdown_pct(return_pct: Sequence[float]) -> float:
     return round(abs(min(dd)), 4)
 
 
+def _resolve_rf(
+    risk_free_rate: float | Mapping[str, float],
+    dates: Sequence[str] | None,
+    n_periods: int,
+) -> list[float]:
+    """Materialize a per-observation list of annualized decimal Rf values.
+
+    Scalar Rf → repeated ``n_periods`` times. Mapping Rf (date→annualized
+    decimal) → looked up at each date with as-of-or-before semantics; if
+    ``dates`` is None we fall back to the scalar mean of the series."""
+    if isinstance(risk_free_rate, int | float):
+        return [float(risk_free_rate)] * n_periods
+    rates: dict[str, float] = dict(risk_free_rate)
+    if dates is None:
+        mean_rf = sum(rates.values()) / len(rates) if rates else 0.0
+        return [mean_rf] * n_periods
+    sorted_keys = sorted(rates.keys())
+    out: list[float] = []
+    for d in dates:
+        if d in rates:
+            out.append(rates[d])
+        else:
+            # As-of-or-before lookup; fall back to earliest observation.
+            earlier = [k for k in sorted_keys if k <= d]
+            out.append(rates[earlier[-1]] if earlier else rates[sorted_keys[0]])
+    return out
+
+
 def risk_metrics(
     values: Sequence[float],
     pnl: Sequence[float],
     trading_days: int = TRADING_DAYS_PER_YEAR,
-    risk_free_rate: float = 0.0,
+    risk_free_rate: float | Mapping[str, float] = 0.0,
+    dates: Sequence[str] | None = None,
 ) -> dict[str, float]:
     """Annualized return, volatility, Sharpe, and max drawdown from value + P&L series.
 
-    ``risk_free_rate`` is the *annualized* risk-free rate as a decimal
-    (0.045 = 4.5%). It's converted to a per-period rate before being
-    subtracted from each daily return for the Sharpe numerator.
-    """
+    ``risk_free_rate`` is the annualized risk-free rate as a decimal
+    (0.045 = 4.5%) — either a scalar or a ``{date: rate}`` mapping. When
+    a mapping is passed, ``dates`` should align with ``values``/``pnl`` so
+    each daily return can be reduced by the day-specific Rf."""
     n_obs = len(values)
     assert n_obs == len(pnl)
+    if dates is not None:
+        assert len(dates) == n_obs
     if n_obs < 2:
         return {"annualized_return": 0.0, "volatility": 0.0, "sharpe": 0.0, "max_drawdown_pct": 0.0}
 
@@ -148,8 +179,10 @@ def risk_metrics(
     std_r = math.sqrt(var_r)
     ann_return = mean_r * trading_days * 100
     ann_vol = std_r * math.sqrt(trading_days) * 100
-    daily_rf = risk_free_rate / trading_days
-    excess_mean = mean_r - daily_rf
+    rf_dates = list(dates[1:]) if dates is not None else None
+    rf_series = _resolve_rf(risk_free_rate, rf_dates, n)
+    excess = [r - (rf / trading_days) for r, rf in zip(daily, rf_series, strict=True)]
+    excess_mean = sum(excess) / n
     # Guard against FP noise near-zero: if volatility is effectively zero,
     # Sharpe is undefined — report 0 rather than a blown-up ratio.
     sharpe = (
@@ -170,10 +203,12 @@ def risk_metrics(
 def _sharpe_from_returns(
     period_returns: Sequence[float],
     periods_per_year: int,
-    risk_free_rate: float,
+    risk_free_rate: float | Sequence[float],
 ) -> float:
     """Annualized Sharpe from a sequence of *per-period* arithmetic returns
-    (decimals, not percent). Returns 0 when stdev is effectively zero."""
+    (decimals, not percent). ``risk_free_rate`` is annualized — either
+    scalar or per-period (must align with ``period_returns``). Returns 0
+    when stdev is effectively zero."""
     n = len(period_returns)
     if n < 2:
         return 0.0
@@ -182,26 +217,31 @@ def _sharpe_from_returns(
     std_r = math.sqrt(var_r)
     if std_r < 1e-12:
         return 0.0
-    period_rf = risk_free_rate / periods_per_year
-    excess = mean_r - period_rf
-    return (excess * periods_per_year) / (std_r * math.sqrt(periods_per_year))
+    if isinstance(risk_free_rate, int | float):
+        rf_iter = [float(risk_free_rate)] * n
+    else:
+        rf_iter = list(risk_free_rate)
+        assert len(rf_iter) == n
+    excess_periods = [
+        r - (rf / periods_per_year) for r, rf in zip(period_returns, rf_iter, strict=True)
+    ]
+    excess_mean = sum(excess_periods) / n
+    return (excess_mean * periods_per_year) / (std_r * math.sqrt(periods_per_year))
 
 
 def sharpe_by_frequency(
     dates: Sequence[str],
     values: Sequence[float],
     pnl: Sequence[float],
-    risk_free_rate: float = 0.0,
+    risk_free_rate: float | Mapping[str, float] = 0.0,
     trading_days: int = TRADING_DAYS_PER_YEAR,
 ) -> dict[str, float]:
     """Annualized Sharpe ratios computed from daily, weekly, and monthly
     cash-flow-adjusted returns derived from ``values`` + ``pnl``.
 
-    The daily return series is built from ``ΔP&L / prev_value`` (same as
-    ``daily_linked_returns``). For weekly/monthly we chain the daily
-    returns into period-end index levels, then take period-over-period
-    arithmetic returns. Each is annualized using its native period count
-    (252 / 52 / 12)."""
+    ``risk_free_rate`` is annualized — either a scalar or a
+    ``{date: rate}`` mapping, in which case the rate aligned with each
+    period-end date is used (as-of-or-before lookup)."""
     assert len(dates) == len(values) == len(pnl)
     if len(dates) < 2:
         return {"daily": 0.0, "weekly": 0.0, "monthly": 0.0}
@@ -225,29 +265,37 @@ def sharpe_by_frequency(
         iso = date(y, m, day).isocalendar()
         return (iso[0], iso[1])
 
-    last_level_by_week: dict[tuple[int, int], float] = {}
-    last_level_by_month: dict[str, float] = {}
+    last_by_week: dict[tuple[int, int], tuple[str, float]] = {}
+    last_by_month: dict[str, tuple[str, float]] = {}
     for d, lvl in zip(dates, levels, strict=True):
-        last_level_by_week[_iso_year_week(d)] = lvl
-        last_level_by_month[d[:7]] = lvl
+        last_by_week[_iso_year_week(d)] = (d, lvl)
+        last_by_month[d[:7]] = (d, lvl)
 
-    def _period_returns(levels_by_key: dict) -> list[float]:
-        out = []
+    def _period_returns_with_dates(
+        levels_by_key: dict,
+    ) -> tuple[list[float], list[str]]:
+        rets: list[float] = []
+        end_dates: list[str] = []
         prev = None
         for k in sorted(levels_by_key.keys()):
-            cur = levels_by_key[k]
+            cur_d, cur_lvl = levels_by_key[k]
             if prev is not None and prev > 0:
-                out.append(cur / prev - 1)
-            prev = cur
-        return out
+                rets.append(cur_lvl / prev - 1)
+                end_dates.append(cur_d)
+            prev = cur_lvl
+        return rets, end_dates
 
-    weekly = _period_returns(last_level_by_week)
-    monthly = _period_returns(last_level_by_month)
+    weekly, weekly_dates = _period_returns_with_dates(last_by_week)
+    monthly, monthly_dates = _period_returns_with_dates(last_by_month)
+
+    daily_rf = _resolve_rf(risk_free_rate, list(dates[1:]), len(daily))
+    weekly_rf = _resolve_rf(risk_free_rate, weekly_dates, len(weekly))
+    monthly_rf = _resolve_rf(risk_free_rate, monthly_dates, len(monthly))
 
     return {
-        "daily": round(_sharpe_from_returns(daily, trading_days, risk_free_rate), 2),
-        "weekly": round(_sharpe_from_returns(weekly, 52, risk_free_rate), 2),
-        "monthly": round(_sharpe_from_returns(monthly, 12, risk_free_rate), 2),
+        "daily": round(_sharpe_from_returns(daily, trading_days, daily_rf), 2),
+        "weekly": round(_sharpe_from_returns(weekly, 52, weekly_rf), 2),
+        "monthly": round(_sharpe_from_returns(monthly, 12, monthly_rf), 2),
     }
 
 
