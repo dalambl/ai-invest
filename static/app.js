@@ -3,8 +3,6 @@ let state = {
     positions: [],
     trades: [],
     watchlist: [],
-    horizonPnl: {},
-    currentHorizon: '1d',
     perfHorizon: 'ytd',
     chartHorizon: '1y',
     sortCol: 'market_value',
@@ -88,33 +86,17 @@ async function loadPositions() {
     try {
         const res = await fetch(`${API}/api/positions`);
         state.positions = await res.json();
-        loadHorizonPnl(state.currentHorizon);
-    } catch { renderHoldings(); }
-}
-
-async function loadHorizonPnl(horizon) {
-    state.currentHorizon = horizon;
-    try {
-        const res = await fetch(`${API}/api/pnl?horizon=${horizon}`);
-        state.horizonPnl = await res.json();
-        document.getElementById('nav-pnl').textContent = fmtPnl(state.horizonPnl.total_pnl);
-        document.getElementById('nav-pnl').className = 'value ' + (state.horizonPnl.total_pnl >= 0 ? 'pos' : 'neg');
-    } catch {
-        state.horizonPnl = { positions: [], total_pnl: 0, total_pnl_pct: 0 };
-    }
+    } catch { }
     renderHoldings();
 }
 
 function renderHoldings() {
     const tbody = document.getElementById('holdings-body');
     const positions = state.positions;
-    const pnlMap = {};
-    (state.horizonPnl.positions || []).forEach(p => { pnlMap[p.symbol] = p; });
 
     const totalMV = positions.reduce((s, p) => s + Math.abs(p.market_value || 0), 0);
 
     let rows = positions.map(p => {
-        const hp = pnlMap[p.symbol] || {};
         const weight = totalMV ? (Math.abs(p.market_value || 0) / totalMV * 100) : 0;
         // USD-denominated unrealized so the column reconciles with Stock + FX.
         // Falls back to local unrealized_pnl when USD fields are absent.
@@ -124,8 +106,7 @@ function renderHoldings() {
         const divs = p.dividends_cumulative || 0;
         const total_return = (p.total_return_usd != null) ? p.total_return_usd : (unrl + divs);
         return { ...p, weight, pnl_pct, dividends_cumulative: divs, total_return,
-                 unrealized_pnl_display: unrl,
-                 horizon_pnl: hp.pnl || 0, horizon_pnl_pct: hp.pnl_pct || 0 };
+                 unrealized_pnl_display: unrl };
     });
 
     if (state.sortCol) {
@@ -136,12 +117,11 @@ function renderHoldings() {
         });
     }
 
-    let totalUnrl = 0, totalHPnl = 0, totalMV2 = 0, totalDivs = 0, totalTR = 0;
+    let totalUnrl = 0, totalMV2 = 0, totalDivs = 0, totalTR = 0;
     let totalMVUsd = 0, totalStockPnl = 0, totalFxPnl = 0;
     let html = '';
     for (const r of rows) {
         totalUnrl += r.unrealized_pnl_display || 0;
-        totalHPnl += r.horizon_pnl || 0;
         totalMV2 += r.market_value || 0;
         totalMVUsd += (r.market_value_usd != null ? r.market_value_usd : r.market_value) || 0;
         totalStockPnl += r.stock_pnl_usd || 0;
@@ -167,12 +147,9 @@ function renderHoldings() {
             <td class="num ${clsPnl(r.pnl_pct)}">${r.pnl_pct.toFixed(2)}%</td>
             <td class="num pos">${fmt(r.dividends_cumulative)}</td>
             <td class="num ${clsPnl(r.total_return)}">${fmtPnl(r.total_return)}</td>
-            <td class="num ${clsPnl(r.horizon_pnl)}">${fmtPnl(r.horizon_pnl)}</td>
-            <td class="num ${clsPnl(r.horizon_pnl_pct)}">${r.horizon_pnl_pct.toFixed(2)}%</td>
             <td>${r.currency || ''}</td>
         </tr>`;
     }
-    const totalPct = totalMV2 ? (totalHPnl / (totalMV2 - totalHPnl) * 100) : 0;
     html += `<tr class="summary-row">
         <td>TOTAL</td><td></td><td></td><td></td><td></td><td></td>
         <td class="num">${fmt(totalMV2)}</td>
@@ -184,10 +161,14 @@ function renderHoldings() {
         <td></td>
         <td class="num pos">${fmt(totalDivs)}</td>
         <td class="num ${clsPnl(totalTR)}">${fmtPnl(totalTR)}</td>
-        <td class="num ${clsPnl(totalHPnl)}">${fmtPnl(totalHPnl)}</td>
-        <td class="num ${clsPnl(totalPct)}">${totalPct.toFixed(2)}%</td><td></td>
+        <td></td>
     </tr>`;
     tbody.innerHTML = html;
+    const navPnl = document.getElementById('nav-pnl');
+    if (navPnl) {
+        navPnl.textContent = fmtPnl(totalUnrl);
+        navPnl.className = 'value ' + (totalUnrl >= 0 ? 'pos' : 'neg');
+    }
 }
 
 async function refreshPositions() {
@@ -436,7 +417,17 @@ async function loadRisk() {
         ).join('');
 
         const sf = data.sharpe_by_frequency || {};
-        const rfPct = data.risk_free_rate != null ? (data.risk_free_rate * 100).toFixed(2) + '%' : '—';
+        const rf = data.risk_free_rate;
+        let rfLabel = '—';
+        if (rf && typeof rf === 'object') {
+            if (rf.kind === 'time-varying' && rf.mean != null) {
+                rfLabel = `${(rf.mean * 100).toFixed(2)}% avg (${(rf.min * 100).toFixed(2)}–${(rf.max * 100).toFixed(2)}%, ${rf.source})`;
+            } else if (rf.value != null) {
+                rfLabel = `${(rf.value * 100).toFixed(2)}% (${rf.source})`;
+            }
+        } else if (typeof rf === 'number') {
+            rfLabel = (rf * 100).toFixed(2) + '%';
+        }
         const rows = [
             { freq: 'Daily', val: sf.daily, periods: 252 },
             { freq: 'Weekly', val: sf.weekly, periods: 52 },
@@ -447,7 +438,7 @@ async function loadRisk() {
                 <td>${r.freq}</td>
                 <td class="num ${clsPnl(r.val)}">${r.val == null ? '—' : Number(r.val).toFixed(2)}</td>
                 <td class="num">${r.periods}</td>
-                <td>${rfPct}</td>
+                <td>${rfLabel}</td>
             </tr>`
         ).join('');
     } catch { }
@@ -745,12 +736,6 @@ async function loadModalChart() {
 
 // --- Horizon bars ---
 function setupHorizonBars() {
-    document.getElementById('holdings-horizon').addEventListener('click', e => {
-        if (!e.target.classList.contains('horizon-pill')) return;
-        document.querySelectorAll('#holdings-horizon .horizon-pill').forEach(p => p.classList.remove('active'));
-        e.target.classList.add('active');
-        loadHorizonPnl(e.target.dataset.h);
-    });
     document.getElementById('perf-horizon').addEventListener('click', e => {
         if (!e.target.classList.contains('horizon-pill')) return;
         document.querySelectorAll('#perf-horizon .horizon-pill').forEach(p => p.classList.remove('active'));
